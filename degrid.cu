@@ -6,6 +6,18 @@
 #define GCF_DIM 128
 #define IMG_SIZE 8192
 
+#define single 77
+#if PRECISION==single
+#define PRECISION float
+#endif
+
+#ifndef PRECISION
+#define PRECISION double
+#endif
+#define PASTER(x) x ## 2
+#define EVALUATOR(x) PASTER(x)
+#define PRECISION2 EVALUATOR(PRECISION)
+
 void CUDA_CHECK_ERR(unsigned lineNumber, const char* fileName) {
 
    cudaError_t err = cudaGetLastError();
@@ -13,16 +25,17 @@ void CUDA_CHECK_ERR(unsigned lineNumber, const char* fileName) {
 }
 
 //typedef struct {float x,y;} float2;
-typedef struct {float x,y; float r,i;} ipt;
+//typedef struct {double x,y;} double2;
+typedef struct {PRECISION x,y; PRECISION r,i;} ipt;
 
-void init_gcf(float2 *gcf, size_t size) {
+void init_gcf(PRECISION2 *gcf, size_t size) {
 
   for (size_t sub_x=0; sub_x<8; sub_x++ )
    for (size_t sub_y=0; sub_y<8; sub_y++ )
     for(size_t x=0; x<size; x++)
      for(size_t y=0; y<size; y++) {
        //Some nonsense GCF
-       float tmp = sin(6.28*x/size/8)*exp(-(1.0*x*x+1.0*y*y*sub_y)/size/size/2);
+       PRECISION tmp = sin(6.28*x/size/8)*exp(-(1.0*x*x+1.0*y*y*sub_y)/size/size/2);
        gcf[size*size*(sub_x+sub_y*8)+x+y*size].x = tmp*sin(1.0*x*sub_x/(y+1));
        gcf[size*size*(sub_x+sub_y*8)+x+y*size].y = tmp*cos(1.0*x*sub_x/(y+1));
        //std::cout << tmp << gcf[x+y*size].x << gcf[x+y*size].y << std::endl;
@@ -30,26 +43,26 @@ void init_gcf(float2 *gcf, size_t size) {
 
 }
 
-__global__ void doNothing(ipt* out, float2* img, float2* gcf, size_t npts){ }
+__global__ void doNothing(ipt* out, PRECISION2* img, PRECISION2* gcf, size_t npts){ }
 
-__global__ void degrid_kernel(ipt* out, float2* img, float2* gcf, size_t npts) {
+__global__ void degrid_kernel(ipt* out, PRECISION2* img, PRECISION2* gcf, size_t npts) {
    
-   __shared__ float2 shm[1024/GCF_DIM][GCF_DIM+1];
+   __shared__ PRECISION2 shm[1024/GCF_DIM][GCF_DIM+1];
    for (int n = blockIdx.x; n<npts; n+= gridDim.x) {
       int sub_x = floorf(8*(out[n].x-floorf(out[n].x)));
       int sub_y = floorf(8*(out[n].y-floorf(out[n].y)));
       int main_x = floorf(out[n].x); 
       int main_y = floorf(out[n].y); 
-      float sum_r = 0.0;
-      float sum_i = 0.0;
+      PRECISION sum_r = 0.0;
+      PRECISION sum_i = 0.0;
       int a = threadIdx.x-GCF_DIM/2;
       for(int b = threadIdx.y-GCF_DIM/2;b<GCF_DIM/2;b+=blockDim.y)
       {
-         float r1 = img[main_x+a+IMG_SIZE*(main_y+b)].x; 
-         float i1 = img[main_x+a+IMG_SIZE*(main_y+b)].y; 
-         float r2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
+         PRECISION r1 = img[main_x+a+IMG_SIZE*(main_y+b)].x; 
+         PRECISION i1 = img[main_x+a+IMG_SIZE*(main_y+b)].y; 
+         PRECISION r2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
                         GCF_DIM*b+a].x;
-         float i2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
+         PRECISION i2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
                         GCF_DIM*b+a].y;
          sum_r += r1*r2 - i1*i2; 
          sum_i += r1*i2 + r2*i1;
@@ -79,7 +92,7 @@ __global__ void degrid_kernel(ipt* out, float2* img, float2* gcf, size_t npts) {
          __syncthreads();
       }
       //Reduce the final warp using shuffle
-      float2 tmp = shm[0][threadIdx.x];
+      PRECISION2 tmp = shm[0][threadIdx.x];
       for(int s = blockDim.x < 16 ? blockDim.x : 16; s>0;s/=2) {
          tmp.x += __shfl_down(tmp.x,s);
          tmp.y += __shfl_down(tmp.y,s);
@@ -92,29 +105,29 @@ __global__ void degrid_kernel(ipt* out, float2* img, float2* gcf, size_t npts) {
    }
 }
 
-void doGPU(ipt* out, float2 *img, float2 *gcf) {
+void doGPU(ipt* out, PRECISION2 *img, PRECISION2 *gcf) {
 //degrid on the CPU
 //  out (inout) - the locations to be interpolated
 //  img (in) - the image
 //  gcf (in) - the gridding convolution function
    ipt* d_out;
-   float2 *d_img, *d_gcf;
+   PRECISION2 *d_img, *d_gcf;
    CUDA_CHECK_ERR(__LINE__,__FILE__);
    //img is padded to avoid overruns. Subtract to find the real head
    img -= IMG_SIZE*GCF_DIM+GCF_DIM;
 
    //Allocate GPU memory
-   cudaMalloc(&d_img, sizeof(float2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM));
-   cudaMalloc(&d_gcf, sizeof(float2)*64*GCF_DIM*GCF_DIM);
+   cudaMalloc(&d_img, sizeof(PRECISION2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM));
+   cudaMalloc(&d_gcf, sizeof(PRECISION2)*64*GCF_DIM*GCF_DIM);
    cudaMalloc(&d_out, sizeof(ipt)*NPOINTS);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
    //Copy in img, gcf and out
    cudaMemcpy(d_img, img, 
-              sizeof(float2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM), 
+              sizeof(PRECISION2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM), 
               cudaMemcpyHostToDevice);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
-   cudaMemcpy(d_gcf, gcf, sizeof(float2)*64*GCF_DIM*GCF_DIM, 
+   cudaMemcpy(d_gcf, gcf, sizeof(PRECISION2)*64*GCF_DIM*GCF_DIM, 
               cudaMemcpyHostToDevice);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
    cudaMemcpy(d_out, out, sizeof(ipt)*NPOINTS,
@@ -139,7 +152,7 @@ void doGPU(ipt* out, float2 *img, float2 *gcf) {
    cudaFree(d_img);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 }
-void doCPU(ipt* out, float2 *img, float2 *gcf) {
+void doCPU(ipt* out, PRECISION2 *img, PRECISION2 *gcf) {
 //degrid on the CPU
 //  out (inout) - the locations to be interpolated
 //  img (in) - the image
@@ -155,16 +168,16 @@ void doCPU(ipt* out, float2 *img, float2 *gcf) {
       int main_x = floor(out[n].x); 
       int main_y = floor(out[n].y); 
       //std::cout << "main = " << main_x << ", " << main_y << std::endl;
-      float sum_r = 0.0;
-      float sum_i = 0.0;
+      PRECISION sum_r = 0.0;
+      PRECISION sum_i = 0.0;
       #pragma acc parallel loop collapse(2) reduction(+:sum_r,sum_i) vector
       for (int a=-GCF_DIM/2; a<GCF_DIM/2 ;a++)
       for (int b=-GCF_DIM/2; b<GCF_DIM/2 ;b++) {
-         float r1 = img[main_x+a+IMG_SIZE*(main_y+b)].x; 
-         float i1 = img[main_x+a+IMG_SIZE*(main_y+b)].y; 
-         float r2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
+         PRECISION r1 = img[main_x+a+IMG_SIZE*(main_y+b)].x; 
+         PRECISION i1 = img[main_x+a+IMG_SIZE*(main_y+b)].y; 
+         PRECISION r2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
                         GCF_DIM*b+a].x;
-         float i2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
+         PRECISION i2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
                         GCF_DIM*b+a].y;
          //std::cout << r1 << std::endl;
          //std::cout << i1 << std::endl;
@@ -182,10 +195,9 @@ void doCPU(ipt* out, float2 *img, float2 *gcf) {
 int main(void) {
 
    ipt out[NPOINTS];
-   ipt out_cpu[NPOINTS];
-   float2 *img = (float2*) malloc((IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM)*sizeof(float2));
+   PRECISION2 *img = (PRECISION2*) malloc((IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM)*sizeof(PRECISION2));
 
-   float2 *gcf = (float2*) malloc(64*GCF_DIM*GCF_DIM*sizeof(float2));
+   PRECISION2 *gcf = (PRECISION2*) malloc(64*GCF_DIM*GCF_DIM*sizeof(PRECISION2));
 
    //img is padded (above and below) to avoid overruns
    img += IMG_SIZE*GCF_DIM+GCF_DIM;
@@ -211,6 +223,7 @@ int main(void) {
 
    doGPU(out,img,gcf);
 #ifdef __CPU_CHECK
+   ipt out_cpu[NPOINTS];
    memcpy(out_cpu, out, sizeof(ipt)*NPOINTS);
    doCPU(out_cpu,img,gcf);
 #endif
