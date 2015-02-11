@@ -1,4 +1,4 @@
-#include "defines.h"
+#include "Defines.h"
 #include "cucommon.cuh"
 #include <iostream>
 
@@ -136,5 +136,5 @@ void degridGPU(CmplxType* out, CmplxType* in, CmplxType *img, CmplxType *gcf) {
    cudaEventDestroy(start); cudaEventDestroy(stop);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 }
-//template void degridGPU<double2>(double2* out, double2* in, double2 *img, double2 *gcf); 
-//template void degridGPU<float2>(float2* out, float2* in, float2 *img, float2 *gcf); 
+template void degridGPU<double2>(double2* out, double2* in, double2 *img, double2 *gcf); 
+template void degridGPU<float2>(float2* out, float2* in, float2 *img, float2 *gcf); 

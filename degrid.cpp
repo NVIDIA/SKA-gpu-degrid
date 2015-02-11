@@ -2,9 +2,11 @@
 #include "math.h"
 #include "stdlib.h"
 
-#include "cucommon.cuh"
 #include "degrid_gpu.cuh"
-#include "defines.h"
+#include "Defines.h"
+
+typedef struct {float x,y;} float2;
+typedef struct {double x,y;} double2;
 
 #define single 77
 #if PRECISION==single
