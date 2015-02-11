@@ -2,7 +2,7 @@
 #include "math.h"
 #include "stdlib.h"
 
-#define NPOINTS 10000
+#define NPOINTS 1000000
 #define GCF_DIM 128
 #define IMG_SIZE 8192
 
@@ -22,6 +22,14 @@ void CUDA_CHECK_ERR(unsigned lineNumber, const char* fileName) {
 
    cudaError_t err = cudaGetLastError();
    if (err) std::cout << "Error " << err << " on line " << lineNumber << " of " << fileName << ": " << cudaGetErrorString(err) << std::endl;
+}
+
+float getElapsed(cudaEvent_t start, cudaEvent_t stop) {
+   float elapsed;
+   cudaEventRecord(stop);
+   cudaEventSynchronize(stop);
+   cudaEventElapsedTime(&elapsed, start, stop);
+   return elapsed;
 }
 
 //typedef struct {float x,y;} float2;
@@ -45,14 +53,14 @@ void init_gcf(PRECISION2 *gcf, size_t size) {
 
 __global__ void doNothing(ipt* out, PRECISION2* img, PRECISION2* gcf, size_t npts){ }
 
-__global__ void degrid_kernel(ipt* out, PRECISION2* img, PRECISION2* gcf, size_t npts) {
+__global__ void degrid_kernel(PRECISION2* out, PRECISION2* in, PRECISION2* img, PRECISION2* gcf, size_t npts) {
    
    __shared__ PRECISION2 shm[1024/GCF_DIM][GCF_DIM+1];
    for (int n = blockIdx.x; n<npts; n+= gridDim.x) {
-      int sub_x = floorf(8*(out[n].x-floorf(out[n].x)));
-      int sub_y = floorf(8*(out[n].y-floorf(out[n].y)));
-      int main_x = floorf(out[n].x); 
-      int main_y = floorf(out[n].y); 
+      int sub_x = floorf(8*(in[n].x-floorf(in[n].x)));
+      int sub_y = floorf(8*(in[n].y-floorf(in[n].y)));
+      int main_x = floorf(in[n].x); 
+      int main_y = floorf(in[n].y); 
       PRECISION sum_r = 0.0;
       PRECISION sum_i = 0.0;
       int a = threadIdx.x-GCF_DIM/2;
@@ -99,30 +107,36 @@ __global__ void degrid_kernel(ipt* out, PRECISION2* img, PRECISION2* gcf, size_t
       }
          
       if (threadIdx.x == 0) {
-         out[n].r = tmp.x;
-         out[n].i = tmp.y; 
+         out[n] = tmp;
       }
    }
 }
 
-void doGPU(ipt* out, PRECISION2 *img, PRECISION2 *gcf) {
+void degridGPU(PRECISION2* out, PRECISION2* in, PRECISION2 *img, PRECISION2 *gcf) {
 //degrid on the CPU
 //  out (inout) - the locations to be interpolated
 //  img (in) - the image
 //  gcf (in) - the gridding convolution function
-   ipt* d_out;
-   PRECISION2 *d_img, *d_gcf;
+   PRECISION2 *d_out, *d_in, *d_img, *d_gcf;
+
+   cudaEvent_t start, stop;
+   cudaEventCreate(&start); cudaEventCreate(&stop);
+
    CUDA_CHECK_ERR(__LINE__,__FILE__);
    //img is padded to avoid overruns. Subtract to find the real head
    img -= IMG_SIZE*GCF_DIM+GCF_DIM;
 
    //Allocate GPU memory
+   std::cout << "img size = " << (IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM)*sizeof(PRECISION2) << std::endl;
    cudaMalloc(&d_img, sizeof(PRECISION2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM));
    cudaMalloc(&d_gcf, sizeof(PRECISION2)*64*GCF_DIM*GCF_DIM);
-   cudaMalloc(&d_out, sizeof(ipt)*NPOINTS);
+   cudaMalloc(&d_out, sizeof(PRECISION2)*NPOINTS);
+   cudaMalloc(&d_in, sizeof(PRECISION2)*NPOINTS);
+   std::cout << "out size = " << sizeof(ipt)*NPOINTS << std::endl;
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
    //Copy in img, gcf and out
+   cudaEventRecord(start);
    cudaMemcpy(d_img, img, 
               sizeof(PRECISION2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM), 
               cudaMemcpyHostToDevice);
@@ -130,19 +144,24 @@ void doGPU(ipt* out, PRECISION2 *img, PRECISION2 *gcf) {
    cudaMemcpy(d_gcf, gcf, sizeof(PRECISION2)*64*GCF_DIM*GCF_DIM, 
               cudaMemcpyHostToDevice);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
-   cudaMemcpy(d_out, out, sizeof(ipt)*NPOINTS,
+   cudaMemcpy(d_in, in, sizeof(PRECISION2)*NPOINTS,
               cudaMemcpyHostToDevice);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
+   std::cout << "memcpy time: " << getElapsed(start, stop) << std::endl;
 
    //move d_img and d_gcf to remove padding
    d_img += IMG_SIZE*GCF_DIM+GCF_DIM;
    //offset gcf to point to the middle of the first GCF for cleaner code later
    d_gcf += GCF_DIM*(GCF_DIM+1)/2;
 
-   degrid_kernel<<<NPOINTS,dim3(GCF_DIM,1024/GCF_DIM)>>>(d_out,d_img,d_gcf,NPOINTS); 
+   cudaEventRecord(start);
+   degrid_kernel<<<NPOINTS,dim3(GCF_DIM,1024/GCF_DIM)>>>(d_out,d_in,d_img,d_gcf,NPOINTS); 
+   float kernel_time = getElapsed(start,stop);
+   std::cout << "kernel time: " << kernel_time << std::endl;
+   std::cout << NPOINTS / 1000000.0 / kernel_time * GCF_DIM * GCF_DIM * 8 << "Gflops" << std::endl;
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
-   cudaMemcpy(out, d_out, sizeof(ipt)*NPOINTS, cudaMemcpyDeviceToHost);
+   cudaMemcpy(out, d_out, sizeof(PRECISION2)*NPOINTS, cudaMemcpyDeviceToHost);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
    //Restore d_img and d_gcf for deallocation
@@ -150,23 +169,25 @@ void doGPU(ipt* out, PRECISION2 *img, PRECISION2 *gcf) {
    d_gcf -= GCF_DIM*(GCF_DIM+1)/2;
    cudaFree(d_out);
    cudaFree(d_img);
+   cudaEventDestroy(start); cudaEventDestroy(stop);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 }
-void doCPU(ipt* out, PRECISION2 *img, PRECISION2 *gcf) {
+void degridCPU(PRECISION2* out, PRECISION2 *in, PRECISION2 *img, PRECISION2 *gcf) {
 //degrid on the CPU
-//  out (inout) - the locations to be interpolated
+//  out (out) - the output values for each location
+//  in  (in)  - the locations to be interpolated 
 //  img (in) - the image
 //  gcf (in) - the gridding convolution function
    //offset gcf to point to the middle for cleaner code later
    gcf += GCF_DIM*(GCF_DIM+1)/2;
-#pragma acc parallel loop copy(out[0:NPOINTS]) copyin(gcf[0:64*GCF_DIM*GCF_DIM],img[IMG_SIZE*IMG_SIZE]) gang
+#pragma acc parallel loop copyout(out[0:NPOINTS]) copyin(in[0:NPOINTS],gcf[0:64*GCF_DIM*GCF_DIM],img[IMG_SIZE*IMG_SIZE]) gang
    for(size_t n=0; n<NPOINTS; n++) {
-      //std::cout << "in = " << out[n].x << ", " << out[n].y << std::endl;
-      int sub_x = floorf(8*(out[n].x-floorf(out[n].x)));
-      int sub_y = floorf(8*(out[n].y-floorf(out[n].y)));
+      //std::cout << "in = " << in[n].x << ", " << in[n].y << std::endl;
+      int sub_x = floorf(8*(in[n].x-floorf(in[n].x)));
+      int sub_y = floorf(8*(in[n].y-floorf(in[n].y)));
       //std::cout << "sub = "  << sub_x << ", " << sub_y << std::endl;
-      int main_x = floor(out[n].x); 
-      int main_y = floor(out[n].y); 
+      int main_x = floor(in[n].x); 
+      int main_y = floor(in[n].y); 
       //std::cout << "main = " << main_x << ", " << main_y << std::endl;
       PRECISION sum_r = 0.0;
       PRECISION sum_i = 0.0;
@@ -186,15 +207,16 @@ void doCPU(ipt* out, PRECISION2 *img, PRECISION2 *gcf) {
          sum_r += r1*r2 - i1*i2; 
          sum_i += r1*i2 + r2*i1;
       }
-      out[n].r = sum_r;
-      out[n].i = sum_i;
+      out[n].x = sum_r;
+      out[n].y = sum_i;
       //std::cout << "val = " << out[n].r << "+ i" << out[n].i << std::endl;
    } 
    gcf -= GCF_DIM*(GCF_DIM+1)/2;
 }
 int main(void) {
 
-   ipt out[NPOINTS];
+   PRECISION2* out = (PRECISION2*) malloc(sizeof(PRECISION2)*NPOINTS);
+   PRECISION2* in = (PRECISION2*) malloc(sizeof(PRECISION2)*NPOINTS);
    PRECISION2 *img = (PRECISION2*) malloc((IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM)*sizeof(PRECISION2));
 
    PRECISION2 *gcf = (PRECISION2*) malloc(64*GCF_DIM*GCF_DIM*sizeof(PRECISION2));
@@ -205,8 +227,8 @@ int main(void) {
    init_gcf(gcf, GCF_DIM);
    srand(2541617);
    for(size_t n=0; n<NPOINTS; n++) {
-      out[n].x = ((float)rand())/RAND_MAX*1000;
-      out[n].y = ((float)rand())/RAND_MAX*1000;
+      in[n].x = ((float)rand())/RAND_MAX*1000;
+      in[n].y = ((float)rand())/RAND_MAX*1000;
    }
    for(size_t x=0; x<IMG_SIZE;x++)
    for(size_t y=0; y<IMG_SIZE;y++) {
@@ -221,21 +243,23 @@ int main(void) {
       img[x+IMG_SIZE*IMG_SIZE].x = 0.0; img[x+IMG_SIZE*IMG_SIZE].y = 0.0;
    }
 
-   doGPU(out,img,gcf);
+   degridGPU(out,in,img,gcf);
 #ifdef __CPU_CHECK
-   ipt out_cpu[NPOINTS];
-   memcpy(out_cpu, out, sizeof(ipt)*NPOINTS);
-   doCPU(out_cpu,img,gcf);
+   PRECISION2 out_cpu=(PRECISION2*)malloc(sizeof(PRECISION2)*NPOINTS);
+   degridCPU(out_cpu,in,img,gcf);
 #endif
 
+
+#if 0
    for (size_t n = 0; n < NPOINTS; n++) {
-     std::cout << "F(" << out[n].x << ", " << out[n].y << ") = " 
-               << out[n].r << ", " << out[n].i 
+     std::cout << "F(" << in[n].x << ", " << in[n].y << ") = " 
+               << out[n].x << ", " << out[n].y 
 #ifdef __CPU_CHECK
-               << " vs. " << out_cpu[n].r << ", " << out_cpu[n].i 
+               << " vs. " << out_cpu[n].x << ", " << out_cpu[n].y 
 #endif
                << std::endl;
    }
+#endif
    img -= GCF_DIM + IMG_SIZE*GCF_DIM;
    free(img);
    free(gcf);
