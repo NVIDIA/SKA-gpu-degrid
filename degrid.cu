@@ -2,9 +2,9 @@
 #include "math.h"
 #include "stdlib.h"
 
-#define NPOINTS 1000000
-#define GCF_DIM 128
-#define IMG_SIZE 8192
+#include "cucommon.cuh"
+#include "degrid_gpu.cuh"
+#include "defines.h"
 
 #define single 77
 #if PRECISION==single
@@ -18,23 +18,6 @@
 #define EVALUATOR(x) PASTER(x)
 #define PRECISION2 EVALUATOR(PRECISION)
 
-void CUDA_CHECK_ERR(unsigned lineNumber, const char* fileName) {
-
-   cudaError_t err = cudaGetLastError();
-   if (err) std::cout << "Error " << err << " on line " << lineNumber << " of " << fileName << ": " << cudaGetErrorString(err) << std::endl;
-}
-
-float getElapsed(cudaEvent_t start, cudaEvent_t stop) {
-   float elapsed;
-   cudaEventRecord(stop);
-   cudaEventSynchronize(stop);
-   cudaEventElapsedTime(&elapsed, start, stop);
-   return elapsed;
-}
-
-//typedef struct {float x,y;} float2;
-//typedef struct {double x,y;} double2;
-typedef struct {PRECISION x,y; PRECISION r,i;} ipt;
 
 void init_gcf(PRECISION2 *gcf, size_t size) {
 
@@ -51,127 +34,6 @@ void init_gcf(PRECISION2 *gcf, size_t size) {
 
 }
 
-__global__ void doNothing(ipt* out, PRECISION2* img, PRECISION2* gcf, size_t npts){ }
-
-__global__ void degrid_kernel(PRECISION2* out, PRECISION2* in, PRECISION2* img, PRECISION2* gcf, size_t npts) {
-   
-   __shared__ PRECISION2 shm[1024/GCF_DIM][GCF_DIM+1];
-   for (int n = blockIdx.x; n<npts; n+= gridDim.x) {
-      int sub_x = floorf(8*(in[n].x-floorf(in[n].x)));
-      int sub_y = floorf(8*(in[n].y-floorf(in[n].y)));
-      int main_x = floorf(in[n].x); 
-      int main_y = floorf(in[n].y); 
-      PRECISION sum_r = 0.0;
-      PRECISION sum_i = 0.0;
-      int a = threadIdx.x-GCF_DIM/2;
-      for(int b = threadIdx.y-GCF_DIM/2;b<GCF_DIM/2;b+=blockDim.y)
-      {
-         PRECISION r1 = img[main_x+a+IMG_SIZE*(main_y+b)].x; 
-         PRECISION i1 = img[main_x+a+IMG_SIZE*(main_y+b)].y; 
-         PRECISION r2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
-                        GCF_DIM*b+a].x;
-         PRECISION i2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
-                        GCF_DIM*b+a].y;
-         sum_r += r1*r2 - i1*i2; 
-         sum_i += r1*i2 + r2*i1;
-      }
-
-      //reduce in two directions
-      //WARNING: Adjustments must be made if blockDim.y and blockDim.x are no
-      //         powers of 2 
-      shm[threadIdx.y][threadIdx.x].x = sum_r;
-      shm[threadIdx.y][threadIdx.x].y = sum_i;
-      __syncthreads();
-      //Reduce in y
-      for(int s = blockDim.y/2;s>0;s/=2) {
-         if (threadIdx.y < s) {
-           shm[threadIdx.y][threadIdx.x].x += shm[threadIdx.y+s][threadIdx.x].x;
-           shm[threadIdx.y][threadIdx.x].y += shm[threadIdx.y+s][threadIdx.x].y;
-         }
-         __syncthreads();
-         if (s==1) break;
-      }
-
-      //Reduce the top row
-      if (threadIdx.y > 0) continue;
-      for(int s = blockDim.x/2;s>16;s/=2) {
-         if (threadIdx.x < s) shm[0][threadIdx.x].x += shm[0][threadIdx.x+s].x;
-         if (threadIdx.x < s) shm[0][threadIdx.x].y += shm[0][threadIdx.x+s].y;
-         __syncthreads();
-      }
-      //Reduce the final warp using shuffle
-      PRECISION2 tmp = shm[0][threadIdx.x];
-      for(int s = blockDim.x < 16 ? blockDim.x : 16; s>0;s/=2) {
-         tmp.x += __shfl_down(tmp.x,s);
-         tmp.y += __shfl_down(tmp.y,s);
-      }
-         
-      if (threadIdx.x == 0) {
-         out[n] = tmp;
-      }
-   }
-}
-
-void degridGPU(PRECISION2* out, PRECISION2* in, PRECISION2 *img, PRECISION2 *gcf) {
-//degrid on the CPU
-//  out (inout) - the locations to be interpolated
-//  img (in) - the image
-//  gcf (in) - the gridding convolution function
-   PRECISION2 *d_out, *d_in, *d_img, *d_gcf;
-
-   cudaEvent_t start, stop;
-   cudaEventCreate(&start); cudaEventCreate(&stop);
-
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-   //img is padded to avoid overruns. Subtract to find the real head
-   img -= IMG_SIZE*GCF_DIM+GCF_DIM;
-
-   //Allocate GPU memory
-   std::cout << "img size = " << (IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM)*sizeof(PRECISION2) << std::endl;
-   cudaMalloc(&d_img, sizeof(PRECISION2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM));
-   cudaMalloc(&d_gcf, sizeof(PRECISION2)*64*GCF_DIM*GCF_DIM);
-   cudaMalloc(&d_out, sizeof(PRECISION2)*NPOINTS);
-   cudaMalloc(&d_in, sizeof(PRECISION2)*NPOINTS);
-   std::cout << "out size = " << sizeof(ipt)*NPOINTS << std::endl;
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-
-   //Copy in img, gcf and out
-   cudaEventRecord(start);
-   cudaMemcpy(d_img, img, 
-              sizeof(PRECISION2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM), 
-              cudaMemcpyHostToDevice);
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-   cudaMemcpy(d_gcf, gcf, sizeof(PRECISION2)*64*GCF_DIM*GCF_DIM, 
-              cudaMemcpyHostToDevice);
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-   cudaMemcpy(d_in, in, sizeof(PRECISION2)*NPOINTS,
-              cudaMemcpyHostToDevice);
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-   std::cout << "memcpy time: " << getElapsed(start, stop) << std::endl;
-
-   //move d_img and d_gcf to remove padding
-   d_img += IMG_SIZE*GCF_DIM+GCF_DIM;
-   //offset gcf to point to the middle of the first GCF for cleaner code later
-   d_gcf += GCF_DIM*(GCF_DIM+1)/2;
-
-   cudaEventRecord(start);
-   degrid_kernel<<<NPOINTS,dim3(GCF_DIM,1024/GCF_DIM)>>>(d_out,d_in,d_img,d_gcf,NPOINTS); 
-   float kernel_time = getElapsed(start,stop);
-   std::cout << "kernel time: " << kernel_time << std::endl;
-   std::cout << NPOINTS / 1000000.0 / kernel_time * GCF_DIM * GCF_DIM * 8 << "Gflops" << std::endl;
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-
-   cudaMemcpy(out, d_out, sizeof(PRECISION2)*NPOINTS, cudaMemcpyDeviceToHost);
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-
-   //Restore d_img and d_gcf for deallocation
-   d_img -= IMG_SIZE*GCF_DIM+GCF_DIM;
-   d_gcf -= GCF_DIM*(GCF_DIM+1)/2;
-   cudaFree(d_out);
-   cudaFree(d_img);
-   cudaEventDestroy(start); cudaEventDestroy(stop);
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-}
 void degridCPU(PRECISION2* out, PRECISION2 *in, PRECISION2 *img, PRECISION2 *gcf) {
 //degrid on the CPU
 //  out (out) - the output values for each location
