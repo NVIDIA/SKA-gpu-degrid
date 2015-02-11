@@ -15,26 +15,27 @@ float getElapsed(cudaEvent_t start, cudaEvent_t stop) {
    cudaEventElapsedTime(&elapsed, start, stop);
    return elapsed;
 }
-template <class CmplxType>
-__global__ void degrid_kernel(CmplxType* out, CmplxType* in, CmplxType* img, CmplxType* gcf, size_t npts) {
+template <int gcf_dim, class CmplxType>
+__global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img, 
+                              size_t img_dim, CmplxType* gcf) {
    
-   __shared__ CmplxType shm[1024/GCF_DIM][GCF_DIM+1];
-   for (int n = blockIdx.x; n<npts; n+= gridDim.x) {
+   __shared__ CmplxType shm[1024/gcf_dim][gcf_dim+1];
+   for (int n = blockIdx.x; n<NPOINTS; n+= gridDim.x) {
       int sub_x = floorf(8*(in[n].x-floorf(in[n].x)));
       int sub_y = floorf(8*(in[n].y-floorf(in[n].y)));
       int main_x = floorf(in[n].x); 
       int main_y = floorf(in[n].y); 
       auto sum_r = img[0].x * 0.0;
       auto sum_i = sum_r;
-      int a = threadIdx.x-GCF_DIM/2;
-      for(int b = threadIdx.y-GCF_DIM/2;b<GCF_DIM/2;b+=blockDim.y)
+      int a = threadIdx.x-gcf_dim/2;
+      for(int b = threadIdx.y-gcf_dim/2;b<gcf_dim/2;b+=blockDim.y)
       {
-         auto r1 = img[main_x+a+IMG_SIZE*(main_y+b)].x; 
-         auto i1 = img[main_x+a+IMG_SIZE*(main_y+b)].y; 
-         auto r2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
-                        GCF_DIM*b+a].x;
-         auto i2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
-                        GCF_DIM*b+a].y;
+         auto r1 = img[main_x+a+img_dim*(main_y+b)].x; 
+         auto i1 = img[main_x+a+img_dim*(main_y+b)].y; 
+         auto r2 = gcf[gcf_dim*gcf_dim*(8*sub_y+sub_x) + 
+                        gcf_dim*b+a].x;
+         auto i2 = gcf[gcf_dim*gcf_dim*(8*sub_y+sub_x) + 
+                        gcf_dim*b+a].y;
          sum_r += r1*r2 - i1*i2; 
          sum_i += r1*i2 + r2*i1;
       }
@@ -76,11 +77,17 @@ __global__ void degrid_kernel(CmplxType* out, CmplxType* in, CmplxType* img, Cmp
 }
 
 template <class CmplxType>
-void degridGPU(CmplxType* out, CmplxType* in, CmplxType *img, CmplxType *gcf) {
-//degrid on the CPU
-//  out (inout) - the locations to be interpolated
+void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_t img_dim, 
+               CmplxType *gcf, size_t gcf_dim) {
+//degrid on the GPU
+//  out (out) - the output values for each location
+//  in  (in)  - the locations to be interpolated 
+//  npts (in) - number of locations
 //  img (in) - the image
+//  img_dim (in) - dimension of the image
 //  gcf (in) - the gridding convolution function
+//  gcf_dim (in) - dimension of the GCF
+
    CmplxType *d_out, *d_in, *d_img, *d_gcf;
 
    cudaEvent_t start, stop;
@@ -88,53 +95,55 @@ void degridGPU(CmplxType* out, CmplxType* in, CmplxType *img, CmplxType *gcf) {
 
    CUDA_CHECK_ERR(__LINE__,__FILE__);
    //img is padded to avoid overruns. Subtract to find the real head
-   img -= IMG_SIZE*GCF_DIM+GCF_DIM;
+   img -= img_dim*gcf_dim+gcf_dim;
 
    //Allocate GPU memory
-   std::cout << "img size = " << (IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM)*sizeof(CmplxType) << std::endl;
-   cudaMalloc(&d_img, sizeof(CmplxType)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM));
-   cudaMalloc(&d_gcf, sizeof(CmplxType)*64*GCF_DIM*GCF_DIM);
-   cudaMalloc(&d_out, sizeof(CmplxType)*NPOINTS);
-   cudaMalloc(&d_in, sizeof(CmplxType)*NPOINTS);
-   std::cout << "out size = " << sizeof(CmplxType)*NPOINTS << std::endl;
+   std::cout << "img size = " << (img_dim*img_dim+2*img_dim*gcf_dim+2*gcf_dim)*
+                                                                 sizeof(CmplxType) << std::endl;
+   cudaMalloc(&d_img, sizeof(CmplxType)*(img_dim*img_dim+2*img_dim*gcf_dim+2*gcf_dim));
+   cudaMalloc(&d_gcf, sizeof(CmplxType)*64*gcf_dim*gcf_dim);
+   cudaMalloc(&d_out, sizeof(CmplxType)*npts);
+   cudaMalloc(&d_in, sizeof(CmplxType)*npts);
+   std::cout << "out size = " << sizeof(CmplxType)*npts << std::endl;
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
    //Copy in img, gcf and out
    cudaEventRecord(start);
    cudaMemcpy(d_img, img, 
-              sizeof(CmplxType)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM), 
+              sizeof(CmplxType)*(img_dim*img_dim+2*img_dim*gcf_dim+2*gcf_dim), 
               cudaMemcpyHostToDevice);
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-   cudaMemcpy(d_gcf, gcf, sizeof(CmplxType)*64*GCF_DIM*GCF_DIM, 
+   cudaMemcpy(d_gcf, gcf, sizeof(CmplxType)*64*gcf_dim*gcf_dim, 
               cudaMemcpyHostToDevice);
-   CUDA_CHECK_ERR(__LINE__,__FILE__);
-   cudaMemcpy(d_in, in, sizeof(CmplxType)*NPOINTS,
+   cudaMemcpy(d_in, in, sizeof(CmplxType)*npts,
               cudaMemcpyHostToDevice);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
    std::cout << "memcpy time: " << getElapsed(start, stop) << std::endl;
 
    //move d_img and d_gcf to remove padding
-   d_img += IMG_SIZE*GCF_DIM+GCF_DIM;
+   d_img += img_dim*gcf_dim+gcf_dim;
    //offset gcf to point to the middle of the first GCF for cleaner code later
-   d_gcf += GCF_DIM*(GCF_DIM+1)/2;
+   d_gcf += gcf_dim*(gcf_dim+1)/2;
 
    cudaEventRecord(start);
-   degrid_kernel<<<NPOINTS,dim3(GCF_DIM,1024/GCF_DIM)>>>(d_out,d_in,d_img,d_gcf,NPOINTS); 
+   degrid_kernel<128>
+            <<<npts,dim3(gcf_dim,1024/gcf_dim)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
    float kernel_time = getElapsed(start,stop);
    std::cout << "kernel time: " << kernel_time << std::endl;
-   std::cout << NPOINTS / 1000000.0 / kernel_time * GCF_DIM * GCF_DIM * 8 << "Gflops" << std::endl;
+   std::cout << npts / 1000000.0 / kernel_time * gcf_dim * gcf_dim * 8 << "Gflops" << std::endl;
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
-   cudaMemcpy(out, d_out, sizeof(CmplxType)*NPOINTS, cudaMemcpyDeviceToHost);
+   cudaMemcpy(out, d_out, sizeof(CmplxType)*npts, cudaMemcpyDeviceToHost);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
    //Restore d_img and d_gcf for deallocation
-   d_img -= IMG_SIZE*GCF_DIM+GCF_DIM;
-   d_gcf -= GCF_DIM*(GCF_DIM+1)/2;
+   d_img -= img_dim*gcf_dim+gcf_dim;
+   d_gcf -= gcf_dim*(gcf_dim+1)/2;
    cudaFree(d_out);
    cudaFree(d_img);
    cudaEventDestroy(start); cudaEventDestroy(stop);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 }
-template void degridGPU<double2>(double2* out, double2* in, double2 *img, double2 *gcf); 
-template void degridGPU<float2>(float2* out, float2* in, float2 *img, float2 *gcf); 
+template void degridGPU<double2>(double2* out, double2* in, size_t npts, double2 *img, 
+                                 size_t img_dim, double2 *gcf, size_t gcf_dim); 
+template void degridGPU<float2>(float2* out, float2* in, size_t npts, float2 *img, 
+                                size_t img_dim, float2 *gcf, size_t gcf_dim); 

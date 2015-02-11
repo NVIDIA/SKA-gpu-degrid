@@ -36,12 +36,16 @@ void init_gcf(PRECISION2 *gcf, size_t size) {
 
 }
 
-void degridCPU(PRECISION2* out, PRECISION2 *in, PRECISION2 *img, PRECISION2 *gcf) {
+void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, size_t img_dim, PRECISION2 *gcf, size_t gcf_dim) {
 //degrid on the CPU
 //  out (out) - the output values for each location
 //  in  (in)  - the locations to be interpolated 
+//  npts (in) - number of locations
 //  img (in) - the image
+//  img_dim (in) - dimension of the image
 //  gcf (in) - the gridding convolution function
+//  gcf_dim (in) - dimension of the GCF
+
    //offset gcf to point to the middle for cleaner code later
    gcf += GCF_DIM*(GCF_DIM+1)/2;
 #pragma acc parallel loop copyout(out[0:NPOINTS]) copyin(in[0:NPOINTS],gcf[0:64*GCF_DIM*GCF_DIM],img[IMG_SIZE*IMG_SIZE]) gang
@@ -107,21 +111,21 @@ int main(void) {
       img[x+IMG_SIZE*IMG_SIZE].x = 0.0; img[x+IMG_SIZE*IMG_SIZE].y = 0.0;
    }
 
-   degridGPU(out,in,img,gcf);
+   degridGPU(out,in,NPOINTS,img,IMG_SIZE,gcf,GCF_DIM);
 #ifdef __CPU_CHECK
-   PRECISION2 out_cpu=(PRECISION2*)malloc(sizeof(PRECISION2)*NPOINTS);
-   degridCPU(out_cpu,in,img,gcf);
+   PRECISION2 *out_cpu=(PRECISION2*)malloc(sizeof(PRECISION2)*NPOINTS);
+   degridCPU(out_cpu,in,NPOINTS,img,IMG_SIZE,gcf,GCF_DIM);
 #endif
 
 
-#if 0
+#ifdef __CPU_CHECK
    for (size_t n = 0; n < NPOINTS; n++) {
-     std::cout << "F(" << in[n].x << ", " << in[n].y << ") = " 
-               << out[n].x << ", " << out[n].y 
-#ifdef __CPU_CHECK
-               << " vs. " << out_cpu[n].x << ", " << out_cpu[n].y 
-#endif
-               << std::endl;
+     if (fabs(out[n].x-out_cpu[n].x) > 0.0000001 ||
+         fabs(out[n].y-out_cpu[n].y) > 0.0000001 )
+        std::cout << "F(" << in[n].x << ", " << in[n].y << ") = " 
+                  << out[n].x << ", " << out[n].y 
+                  << " vs. " << out_cpu[n].x << ", " << out_cpu[n].y 
+                  << std::endl;
    }
 #endif
    img -= GCF_DIM + IMG_SIZE*GCF_DIM;
