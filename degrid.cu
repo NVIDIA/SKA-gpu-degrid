@@ -6,12 +6,10 @@
 #include "Defines.h"
 #include "cuda.h"
 
-#ifndef __MANAGED
 //With managed memory, degrid.cpp must be compiled as CUDA
 //in which case float2 and double2 are predefined.
-typedef struct {float x,y;} float2;
-typedef struct {double x,y;} double2;
-#endif
+//typedef struct {float x,y;} float2;
+//typedef struct {double x,y;} double2;
 
 #define single 77
 #if PRECISION==single
