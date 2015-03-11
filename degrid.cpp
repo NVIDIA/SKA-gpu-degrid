@@ -4,9 +4,14 @@
 
 #include "degrid_gpu.cuh"
 #include "Defines.h"
+#include "cuda.h"
 
+#ifndef __MANAGED
+//With managed memory, degrid.cpp must be compiled as CUDA
+//in which case float2 and double2 are predefined.
 typedef struct {float x,y;} float2;
 typedef struct {double x,y;} double2;
+#endif
 
 #define single 77
 #if PRECISION==single
@@ -83,11 +88,19 @@ void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, si
 }
 int main(void) {
 
+#ifdef __MANAGED
+   PRECISION2* out, *in, *img, *gcf;
+   cudaMallocManaged(&out, sizeof(PRECISION2)*NPOINTS);
+   cudaMallocManaged(&in, sizeof(PRECISION2)*NPOINTS);
+   cudaMallocManaged(&img, sizeof(PRECISION2)*(IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM));
+   cudaMallocManaged(&gcf, sizeof(PRECISION2)*64*GCF_DIM*GCF_DIM);
+#else
    PRECISION2* out = (PRECISION2*) malloc(sizeof(PRECISION2)*NPOINTS);
    PRECISION2* in = (PRECISION2*) malloc(sizeof(PRECISION2)*NPOINTS);
    PRECISION2 *img = (PRECISION2*) malloc((IMG_SIZE*IMG_SIZE+2*IMG_SIZE*GCF_DIM+2*GCF_DIM)*sizeof(PRECISION2));
 
    PRECISION2 *gcf = (PRECISION2*) malloc(64*GCF_DIM*GCF_DIM*sizeof(PRECISION2));
+#endif
 
    //img is padded (above and below) to avoid overruns
    img += IMG_SIZE*GCF_DIM+GCF_DIM;
@@ -129,6 +142,15 @@ int main(void) {
    }
 #endif
    img -= GCF_DIM + IMG_SIZE*GCF_DIM;
+#ifdef __MANAGED
+   cudaFree(out);
+   cudaFree(in);
+   cudaFree(img);
+   cudaFree(gcf);
+#else
+   free(out);
+   free(in);
    free(img);
    free(gcf);
+#endif
 }

@@ -1,4 +1,7 @@
 PRECISION ?= double
+ifeq ($(MANAGED),1)
+	USERFLAGS += -D__MANAGED -x cu
+endif
 
 all:  degrid
 

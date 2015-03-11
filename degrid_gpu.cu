@@ -94,6 +94,15 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    cudaEventCreate(&start); cudaEventCreate(&stop);
 
    CUDA_CHECK_ERR(__LINE__,__FILE__);
+#ifdef __MANAGED
+   d_img = img;
+   d_gcf = gcf;
+   d_out = out;
+   d_in = in;
+   std::cout << "img size = " << (img_dim*img_dim+2*img_dim*gcf_dim+2*gcf_dim)*
+                                                                 sizeof(CmplxType) << std::endl;
+   std::cout << "out size = " << sizeof(CmplxType)*npts << std::endl;
+#else
    //img is padded to avoid overruns. Subtract to find the real head
    img -= img_dim*gcf_dim+gcf_dim;
 
@@ -121,6 +130,7 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
 
    //move d_img and d_gcf to remove padding
    d_img += img_dim*gcf_dim+gcf_dim;
+#endif
    //offset gcf to point to the middle of the first GCF for cleaner code later
    d_gcf += gcf_dim*(gcf_dim+1)/2;
 
@@ -132,6 +142,9 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    std::cout << npts / 1000000.0 / kernel_time * gcf_dim * gcf_dim * 8 << "Gflops" << std::endl;
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
+#ifdef __MANAGED
+   cudaDeviceSynchronize();
+#else
    cudaMemcpy(out, d_out, sizeof(CmplxType)*npts, cudaMemcpyDeviceToHost);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
@@ -140,6 +153,7 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    d_gcf -= gcf_dim*(gcf_dim+1)/2;
    cudaFree(d_out);
    cudaFree(d_img);
+#endif
    cudaEventDestroy(start); cudaEventDestroy(stop);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 }
