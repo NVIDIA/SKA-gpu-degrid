@@ -15,6 +15,17 @@ float getElapsed(cudaEvent_t start, cudaEvent_t stop) {
    cudaEventElapsedTime(&elapsed, start, stop);
    return elapsed;
 }
+__device__ int2 convert(int asize, int Qpx, float pin) {
+
+   float frac; float round;
+   //TODO add the 1 afterward?
+   frac = modf((pin+1)*asize, &round);
+   return make_int2(int(round), int(frac*Qpx));
+}
+
+__device__ double make_zero(double2* in) { return (double)0.0;}
+__device__ float make_zero(float2* in) { return (float)0.0;}
+
 template <int gcf_dim, class CmplxType>
 __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img, 
                               size_t img_dim, CmplxType* gcf) {
@@ -25,8 +36,8 @@ __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxT
       int sub_y = floorf(GCF_GRID*(in[n].y-floorf(in[n].y)));
       int main_x = floorf(in[n].x); 
       int main_y = floorf(in[n].y); 
-      auto sum_r = img[0].x * 0.0;
-      auto sum_i = sum_r;
+      auto sum_r = make_zero(img);
+      auto sum_i = make_zero(img);
       int a = threadIdx.x-gcf_dim/2;
       for(int b = threadIdx.y-gcf_dim/2;b<gcf_dim/2;b+=blockDim.y)
       {
@@ -138,7 +149,7 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    degrid_kernel<128>
             <<<npts,dim3(gcf_dim,1024/gcf_dim)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
    float kernel_time = getElapsed(start,stop);
-   std::cout << "kernel time: " << kernel_time << std::endl;
+   std::cout << "Processed " << npts << " complex points in " << kernel_time << " ms." << std::endl;
    std::cout << npts / 1000000.0 / kernel_time * gcf_dim * gcf_dim * 8 << "Gflops" << std::endl;
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
