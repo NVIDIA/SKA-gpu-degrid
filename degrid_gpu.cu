@@ -21,8 +21,8 @@ __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxT
    
    __shared__ CmplxType shm[1024/gcf_dim][gcf_dim+1];
    for (int n = blockIdx.x; n<NPOINTS; n+= gridDim.x) {
-      int sub_x = floorf(8*(in[n].x-floorf(in[n].x)));
-      int sub_y = floorf(8*(in[n].y-floorf(in[n].y)));
+      int sub_x = floorf(GCF_GRID*(in[n].x-floorf(in[n].x)));
+      int sub_y = floorf(GCF_GRID*(in[n].y-floorf(in[n].y)));
       int main_x = floorf(in[n].x); 
       int main_y = floorf(in[n].y); 
       auto sum_r = img[0].x * 0.0;
@@ -32,9 +32,9 @@ __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxT
       {
          auto r1 = img[main_x+a+img_dim*(main_y+b)].x; 
          auto i1 = img[main_x+a+img_dim*(main_y+b)].y; 
-         auto r2 = gcf[gcf_dim*gcf_dim*(8*sub_y+sub_x) + 
+         auto r2 = gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                         gcf_dim*b+a].x;
-         auto i2 = gcf[gcf_dim*gcf_dim*(8*sub_y+sub_x) + 
+         auto i2 = gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                         gcf_dim*b+a].y;
          sum_r += r1*r2 - i1*i2; 
          sum_i += r1*i2 + r2*i1;

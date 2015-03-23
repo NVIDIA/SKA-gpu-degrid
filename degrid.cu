@@ -26,14 +26,14 @@
 
 void init_gcf(PRECISION2 *gcf, size_t size) {
 
-  for (size_t sub_x=0; sub_x<8; sub_x++ )
-   for (size_t sub_y=0; sub_y<8; sub_y++ )
+  for (size_t sub_x=0; sub_x<GCF_GRID; sub_x++ )
+   for (size_t sub_y=0; sub_y<GCF_GRID; sub_y++ )
     for(size_t x=0; x<size; x++)
      for(size_t y=0; y<size; y++) {
        //Some nonsense GCF
-       PRECISION tmp = sin(6.28*x/size/8)*exp(-(1.0*x*x+1.0*y*y*sub_y)/size/size/2);
-       gcf[size*size*(sub_x+sub_y*8)+x+y*size].x = tmp*sin(1.0*x*sub_x/(y+1));
-       gcf[size*size*(sub_x+sub_y*8)+x+y*size].y = tmp*cos(1.0*x*sub_x/(y+1));
+       PRECISION tmp = sin(6.28*x/size/GCF_GRID)*exp(-(1.0*x*x+1.0*y*y*sub_y)/size/size/2);
+       gcf[size*size*(sub_x+sub_y*GCF_GRID)+x+y*size].x = tmp*sin(1.0*x*sub_x/(y+1));
+       gcf[size*size*(sub_x+sub_y*GCF_GRID)+x+y*size].y = tmp*cos(1.0*x*sub_x/(y+1));
        //std::cout << tmp << gcf[x+y*size].x << gcf[x+y*size].y << std::endl;
      }
 
@@ -51,11 +51,11 @@ void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, si
 
    //offset gcf to point to the middle for cleaner code later
    gcf += GCF_DIM*(GCF_DIM+1)/2;
-#pragma acc parallel loop copyout(out[0:NPOINTS]) copyin(in[0:NPOINTS],gcf[0:64*GCF_DIM*GCF_DIM],img[IMG_SIZE*IMG_SIZE]) gang
+#pragma acc parallel loop copyout(out[0:NPOINTS]) copyin(in[0:NPOINTS],gcf[0:GCF_GRID*GCF_GRID*GCF_DIM*GCF_DIM],img[IMG_SIZE*IMG_SIZE]) gang
    for(size_t n=0; n<NPOINTS; n++) {
       //std::cout << "in = " << in[n].x << ", " << in[n].y << std::endl;
-      int sub_x = floorf(8*(in[n].x-floorf(in[n].x)));
-      int sub_y = floorf(8*(in[n].y-floorf(in[n].y)));
+      int sub_x = floorf(GCF_GRID*(in[n].x-floorf(in[n].x)));
+      int sub_y = floorf(GCF_GRID*(in[n].y-floorf(in[n].y)));
       //std::cout << "sub = "  << sub_x << ", " << sub_y << std::endl;
       int main_x = floor(in[n].x); 
       int main_y = floor(in[n].y); 
@@ -67,9 +67,9 @@ void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, si
       for (int b=-GCF_DIM/2; b<GCF_DIM/2 ;b++) {
          PRECISION r1 = img[main_x+a+IMG_SIZE*(main_y+b)].x; 
          PRECISION i1 = img[main_x+a+IMG_SIZE*(main_y+b)].y; 
-         PRECISION r2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
+         PRECISION r2 = gcf[GCF_DIM*GCF_DIM*(GCF_GRID*sub_y+sub_x) + 
                         GCF_DIM*b+a].x;
-         PRECISION i2 = gcf[GCF_DIM*GCF_DIM*(8*sub_y+sub_x) + 
+         PRECISION i2 = gcf[GCF_DIM*GCF_DIM*(GCF_GRID*sub_y+sub_x) + 
                         GCF_DIM*b+a].y;
          //std::cout << r1 << std::endl;
          //std::cout << i1 << std::endl;
@@ -124,12 +124,14 @@ int main(void) {
 
    degridGPU(out,in,NPOINTS,img,IMG_SIZE,gcf,GCF_DIM);
 #ifdef __CPU_CHECK
+   std::cout << "Computing on CPU..." << std::endl;
    PRECISION2 *out_cpu=(PRECISION2*)malloc(sizeof(PRECISION2)*NPOINTS);
    degridCPU(out_cpu,in,NPOINTS,img,IMG_SIZE,gcf,GCF_DIM);
 #endif
 
 
 #ifdef __CPU_CHECK
+   std::cout << "Checking results against CPU:" << std::endl;
    for (size_t n = 0; n < NPOINTS; n++) {
      if (fabs(out[n].x-out_cpu[n].x) > 0.0000001 ||
          fabs(out[n].y-out_cpu[n].y) > 0.0000001 )
