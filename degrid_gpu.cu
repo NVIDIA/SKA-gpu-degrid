@@ -31,8 +31,12 @@ __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxT
                               size_t img_dim, CmplxType* gcf) {
    
    __shared__ CmplxType shm[1024/gcf_dim][gcf_dim+1];
-   for (int n = blockIdx.x; n<npts; n+= gridDim.x) {
-      CmplxType inn = in[n];
+   __shared__ CmplxType inbuff[32];
+   for (int n = 32*blockIdx.x; n<npts; n+= 32*gridDim.x) {
+   if (threadIdx.y == 0 && threadIdx.x<32) inbuff[threadIdx.x] = in[n+threadIdx.x];
+   __syncthreads();
+   for (int q=0;q<32;q++) {
+      CmplxType inn = inbuff[q];
       int sub_x = floorf(GCF_GRID*(inn.x-floorf(inn.x)));
       int sub_y = floorf(GCF_GRID*(inn.y-floorf(inn.y)));
       int main_x = floorf(inn.x); 
@@ -84,9 +88,10 @@ __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxT
          }
          
          if (threadIdx.x == 0) {
-            out[n] = tmp;
+            out[n+q] = tmp;
          }
       }
+   }
    }
 }
 
