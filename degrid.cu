@@ -135,7 +135,7 @@ int main(void) {
    for (size_t n = 0; n < NPOINTS; n++) {
      if (fabs(out[n].x-out_cpu[n].x) > 0.0000001 ||
          fabs(out[n].y-out_cpu[n].y) > 0.0000001 )
-        std::cout << "F(" << in[n].x << ", " << in[n].y << ") = " 
+        std::cout << n << ": F(" << in[n].x << ", " << in[n].y << ") = " 
                   << out[n].x << ", " << out[n].y 
                   << " vs. " << out_cpu[n].x << ", " << out_cpu[n].y 
                   << std::endl;
