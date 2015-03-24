@@ -15,27 +15,43 @@ float getElapsed(cudaEvent_t start, cudaEvent_t stop) {
    cudaEventElapsedTime(&elapsed, start, stop);
    return elapsed;
 }
+__device__ int2 convert(int asize, int Qpx, float pin) {
+
+   float frac; float round;
+   //TODO add the 1 afterward?
+   frac = modf((pin+1)*asize, &round);
+   return make_int2(int(round), int(frac*Qpx));
+}
+
+__device__ double make_zero(double2* in) { return (double)0.0;}
+__device__ float make_zero(float2* in) { return (float)0.0;}
+
 template <int gcf_dim, class CmplxType>
 __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img, 
                               size_t img_dim, CmplxType* gcf) {
    
    __shared__ CmplxType shm[1024/gcf_dim][gcf_dim+1];
-   for (int n = blockIdx.x; n<NPOINTS; n+= gridDim.x) {
-      int sub_x = floorf(8*(in[n].x-floorf(in[n].x)));
-      int sub_y = floorf(8*(in[n].y-floorf(in[n].y)));
-      int main_x = floorf(in[n].x); 
-      int main_y = floorf(in[n].y); 
-      auto sum_r = img[0].x * 0.0;
-      auto sum_i = sum_r;
+   __shared__ CmplxType inbuff[32];
+   for (int n = 32*blockIdx.x; n<npts; n+= 32*gridDim.x) {
+   if (threadIdx.y == 0 && threadIdx.x<32) inbuff[threadIdx.x] = in[n+threadIdx.x];
+   __syncthreads();
+   for (int q=0;q<32;q++) {
+      CmplxType inn = inbuff[q];
+      int sub_x = floorf(GCF_GRID*(inn.x-floorf(inn.x)));
+      int sub_y = floorf(GCF_GRID*(inn.y-floorf(inn.y)));
+      int main_x = floorf(inn.x); 
+      int main_y = floorf(inn.y); 
+      auto sum_r = make_zero(img);
+      auto sum_i = make_zero(img);
       int a = threadIdx.x-gcf_dim/2;
       for(int b = threadIdx.y-gcf_dim/2;b<gcf_dim/2;b+=blockDim.y)
       {
          auto r1 = img[main_x+a+img_dim*(main_y+b)].x; 
          auto i1 = img[main_x+a+img_dim*(main_y+b)].y; 
-         auto r2 = gcf[gcf_dim*gcf_dim*(8*sub_y+sub_x) + 
-                        gcf_dim*b+a].x;
-         auto i2 = gcf[gcf_dim*gcf_dim*(8*sub_y+sub_x) + 
-                        gcf_dim*b+a].y;
+         auto r2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
+                        gcf_dim*b+a].x);
+         auto i2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
+                        gcf_dim*b+a].y);
          sum_r += r1*r2 - i1*i2; 
          sum_i += r1*i2 + r2*i1;
       }
@@ -53,26 +69,29 @@ __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxT
            shm[threadIdx.y][threadIdx.x].y += shm[threadIdx.y+s][threadIdx.x].y;
          }
          __syncthreads();
-         if (s==1) break;
       }
 
       //Reduce the top row
-      if (threadIdx.y > 0) continue;
       for(int s = blockDim.x/2;s>16;s/=2) {
-         if (threadIdx.x < s) shm[0][threadIdx.x].x += shm[0][threadIdx.x+s].x;
-         if (threadIdx.x < s) shm[0][threadIdx.x].y += shm[0][threadIdx.x+s].y;
+         if (0 == threadIdx.y && threadIdx.x < s) 
+                    shm[0][threadIdx.x].x += shm[0][threadIdx.x+s].x;
+         if (0 == threadIdx.y && threadIdx.x < s) 
+                    shm[0][threadIdx.x].y += shm[0][threadIdx.x+s].y;
          __syncthreads();
       }
-      //Reduce the final warp using shuffle
-      CmplxType tmp = shm[0][threadIdx.x];
-      for(int s = blockDim.x < 16 ? blockDim.x : 16; s>0;s/=2) {
-         tmp.x += __shfl_down(tmp.x,s);
-         tmp.y += __shfl_down(tmp.y,s);
-      }
+      if (threadIdx.y == 0) {
+         //Reduce the final warp using shuffle
+         CmplxType tmp = shm[0][threadIdx.x];
+         for(int s = blockDim.x < 16 ? blockDim.x : 16; s>0;s/=2) {
+            tmp.x += __shfl_down(tmp.x,s);
+            tmp.y += __shfl_down(tmp.y,s);
+         }
          
-      if (threadIdx.x == 0) {
-         out[n] = tmp;
+         if (threadIdx.x == 0) {
+            out[n+q] = tmp;
+         }
       }
+   }
    }
 }
 
@@ -136,9 +155,9 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
 
    cudaEventRecord(start);
    degrid_kernel<128>
-            <<<npts,dim3(gcf_dim,1024/gcf_dim)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
+            <<<npts/32,dim3(gcf_dim,512/gcf_dim)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
    float kernel_time = getElapsed(start,stop);
-   std::cout << "kernel time: " << kernel_time << std::endl;
+   std::cout << "Processed " << npts << " complex points in " << kernel_time << " ms." << std::endl;
    std::cout << npts / 1000000.0 / kernel_time * gcf_dim * gcf_dim * 8 << "Gflops" << std::endl;
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
