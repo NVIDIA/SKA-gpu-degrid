@@ -84,6 +84,43 @@ void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, si
    } 
    gcf -= GCF_DIM*(GCF_DIM+1)/2;
 }
+template <class T,class Thalf>
+int w_comp_main(const void* A, const void* B) {
+   Thalf quota, rema, quotb, remb;
+   rema = modf((*((T*)A)).x, &quota);
+   remb = modf((*((T*)B)).x, &quotb);
+   if (rema > remb) return 1;
+   if (rema < remb) return -1;
+   else {
+     rema = modf((*((T*)A)).y, &quota);
+     remb = modf((*((T*)B)).y, &quotb);
+     if (rema > remb) return 1;
+     if (rema < remb) return 1;
+     else return 0;
+   }
+   return 0;
+}
+template <class T,class Thalf>
+int w_comp_sub(const void* A, const void* B) {
+   Thalf quota, rema, quotb, remb;
+   rema = modf((*((T*)A)).x, &quota);
+   remb = modf((*((T*)B)).x, &quotb);
+   int sub_xa = (int) (GCF_GRID*rema);
+   int sub_xb = (int) (GCF_GRID*remb);
+   rema = modf((*((T*)A)).y, &quota);
+   remb = modf((*((T*)B)).y, &quotb);
+   int suba = (int) (GCF_GRID*rema) + GCF_GRID*sub_xa;
+   int subb = (int) (GCF_GRID*remb) + GCF_GRID*sub_xb;
+   if (suba > subb) return 1;
+   if (suba < subb) return -1;
+   return 0;
+}
+template <class T,class Thalf>
+int w_comp_full(const void* A, const void* B) {
+   int result = w_comp_sub<T,Thalf>(A,B);
+   if (0==result) return w_comp_main<T,Thalf>(A,B);
+   else return result;
+}
 int main(void) {
 
 #ifdef __MANAGED
@@ -122,6 +159,8 @@ int main(void) {
       img[x+IMG_SIZE*IMG_SIZE].x = 0.0; img[x+IMG_SIZE*IMG_SIZE].y = 0.0;
    }
 
+   std::qsort(in, NPOINTS, sizeof(double2), w_comp_sub<double2,double>);
+   
    degridGPU(out,in,NPOINTS,img,IMG_SIZE,gcf,GCF_DIM);
 #ifdef __CPU_CHECK
    std::cout << "Computing on CPU..." << std::endl;
