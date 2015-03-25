@@ -30,7 +30,8 @@ template <int gcf_dim, class CmplxType>
 __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img, 
                               size_t img_dim, CmplxType* gcf) {
    
-   __shared__ CmplxType shm[1024/gcf_dim][gcf_dim+1];
+   //TODO remove hard-coded numbers 512, 32
+   __shared__ CmplxType shm[512/gcf_dim][gcf_dim+1];
    __shared__ CmplxType inbuff[32];
    for (int n = 32*blockIdx.x; n<npts; n+= 32*gridDim.x) {
    if (threadIdx.y == 0 && threadIdx.x<32) inbuff[threadIdx.x] = in[n+threadIdx.x];
