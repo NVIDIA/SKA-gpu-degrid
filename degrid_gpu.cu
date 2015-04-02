@@ -27,7 +27,9 @@ __device__ double make_zero(double2* in) { return (double)0.0;}
 __device__ float make_zero(float2* in) { return (float)0.0;}
 
 template <int gcf_dim, class CmplxType>
-__global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img, 
+__global__ void 
+//__launch_bounds__(256, 6)
+degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img, 
                               size_t img_dim, CmplxType* gcf) {
    
    //TODO remove hard-coded 32
@@ -97,6 +99,14 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    //img is padded to avoid overruns. Subtract to find the real head
    img -= img_dim*gcf_dim+gcf_dim;
 
+#ifndef __MANAGED
+   //Pin CPU memory
+   cudaHostRegister(img, sizeof(CmplxType)*(img_dim*img_dim+2*img_dim*gcf_dim+2*gcf_dim), cudaHostRegisterMapped);
+   cudaHostRegister(gcf, sizeof(CmplxType)*64*gcf_dim*gcf_dim, cudaHostRegisterMapped);
+   cudaHostRegister(out, sizeof(CmplxType)*npts, cudaHostRegisterMapped);
+   cudaHostRegister(in, sizeof(CmplxType)*npts, cudaHostRegisterMapped);
+#endif
+
    //Allocate GPU memory
    std::cout << "img size = " << (img_dim*img_dim+2*img_dim*gcf_dim+2*gcf_dim)*
                                                                  sizeof(CmplxType) << std::endl;
@@ -126,8 +136,8 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    d_gcf += gcf_dim*(gcf_dim+1)/2;
 
    cudaEventRecord(start);
-   degrid_kernel<128>
-            <<<npts/32,dim3(32,8)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
+   degrid_kernel<GCF_DIM>
+               <<<npts/32,dim3(32,8)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
    float kernel_time = getElapsed(start,stop);
    std::cout << "Processed " << npts << " complex points in " << kernel_time << " ms." << std::endl;
    std::cout << npts / 1000000.0 / kernel_time * gcf_dim * gcf_dim * 8 << "Gflops" << std::endl;
@@ -138,6 +148,14 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
 #else
    cudaMemcpy(out, d_out, sizeof(CmplxType)*npts, cudaMemcpyDeviceToHost);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
+
+#ifndef __MANAGED
+   //Unpin CPU memory
+   cudaHostUnregister(img);
+   cudaHostUnregister(gcf);
+   cudaHostUnregister(out);
+   cudaHostUnregister(in);
+#endif
 
    //Restore d_img and d_gcf for deallocation
    d_img -= img_dim*gcf_dim+gcf_dim;
