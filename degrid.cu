@@ -159,7 +159,7 @@ int main(void) {
       img[x+IMG_SIZE*IMG_SIZE].x = 0.0; img[x+IMG_SIZE*IMG_SIZE].y = 0.0;
    }
 
-   std::qsort(in, NPOINTS, sizeof(double2), w_comp_sub<double2,double>);
+   std::qsort(in, NPOINTS, sizeof(PRECISION2), w_comp_sub<PRECISION2,PRECISION>);
    
    degridGPU(out,in,NPOINTS,img,IMG_SIZE,gcf,GCF_DIM);
 #ifdef __CPU_CHECK
