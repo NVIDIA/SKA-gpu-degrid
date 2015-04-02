@@ -52,6 +52,7 @@ void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, si
    //offset gcf to point to the middle for cleaner code later
    gcf += GCF_DIM*(GCF_DIM+1)/2;
 #pragma acc parallel loop copyout(out[0:NPOINTS]) copyin(in[0:NPOINTS],gcf[0:GCF_GRID*GCF_GRID*GCF_DIM*GCF_DIM],img[IMG_SIZE*IMG_SIZE]) gang
+#pragma omp parallel for
    for(size_t n=0; n<NPOINTS; n++) {
       //std::cout << "in = " << in[n].x << ", " << in[n].y << std::endl;
       int sub_x = floorf(GCF_GRID*(in[n].x-floorf(in[n].x)));
@@ -63,6 +64,7 @@ void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, si
       PRECISION sum_r = 0.0;
       PRECISION sum_i = 0.0;
       #pragma acc parallel loop collapse(2) reduction(+:sum_r,sum_i) vector
+#pragma omp parallel for collapse(2) reduction(+:sum_r, sum_i)
       for (int a=-GCF_DIM/2; a<GCF_DIM/2 ;a++)
       for (int b=-GCF_DIM/2; b<GCF_DIM/2 ;b++) {
          PRECISION r1 = img[main_x+a+IMG_SIZE*(main_y+b)].x; 

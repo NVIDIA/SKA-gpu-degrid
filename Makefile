@@ -5,6 +5,7 @@ endif
 ifeq ($(DEBUG),1)
 	USERFLAGS += -g -G -lineinfo -D__CPU_CHECK
 endif
+USERFLAGS += -Xcompiler -fopenmp
 
 all:  degrid
 
