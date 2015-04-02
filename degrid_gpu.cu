@@ -30,22 +30,18 @@ template <int gcf_dim, class CmplxType>
 __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img, 
                               size_t img_dim, CmplxType* gcf) {
    
-   //TODO remove hard-coded numbers 512, 32
-   __shared__ CmplxType shm[512/gcf_dim][gcf_dim+1];
-   __shared__ CmplxType inbuff[32];
+   //TODO remove hard-coded 32
    for (int n = 32*blockIdx.x; n<npts; n+= 32*gridDim.x) {
-   if (threadIdx.y == 0 && threadIdx.x<32) inbuff[threadIdx.x] = in[n+threadIdx.x];
-   __syncthreads();
-   for (int q=0;q<32;q++) {
-      CmplxType inn = inbuff[q];
+   for (int q=threadIdx.y;q<32;q+=blockDim.y) {
+      CmplxType inn = in[n+q];
       int sub_x = floorf(GCF_GRID*(inn.x-floorf(inn.x)));
       int sub_y = floorf(GCF_GRID*(inn.y-floorf(inn.y)));
       int main_x = floorf(inn.x); 
       int main_y = floorf(inn.y); 
       auto sum_r = make_zero(img);
       auto sum_i = make_zero(img);
-      int a = threadIdx.x-gcf_dim/2;
-      for(int b = threadIdx.y-gcf_dim/2;b<gcf_dim/2;b+=blockDim.y)
+      for(int a = threadIdx.x-gcf_dim/2;a<gcf_dim/2;a+=blockDim.x)
+      for(int b = -gcf_dim/2;b<gcf_dim/2;b++)
       {
          auto r1 = img[main_x+a+img_dim*(main_y+b)].x; 
          auto i1 = img[main_x+a+img_dim*(main_y+b)].y; 
@@ -57,40 +53,15 @@ __global__ void degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxT
          sum_i += r1*i2 + r2*i1;
       }
 
-      //reduce in two directions
-      //WARNING: Adjustments must be made if blockDim.y and blockDim.x are no
-      //         powers of 2 
-      shm[threadIdx.y][threadIdx.x].x = sum_r;
-      shm[threadIdx.y][threadIdx.x].y = sum_i;
-      __syncthreads();
-      //Reduce in y
-      for(int s = blockDim.y/2;s>0;s/=2) {
-         if (threadIdx.y < s) {
-           shm[threadIdx.y][threadIdx.x].x += shm[threadIdx.y+s][threadIdx.x].x;
-           shm[threadIdx.y][threadIdx.x].y += shm[threadIdx.y+s][threadIdx.x].y;
-         }
-         __syncthreads();
+      for(int s = blockDim.x < 16 ? blockDim.x : 16; s>0;s/=2) {
+         sum_r += __shfl_down(sum_r,s);
+         sum_i += __shfl_down(sum_i,s);
       }
-
-      //Reduce the top row
-      for(int s = blockDim.x/2;s>16;s/=2) {
-         if (0 == threadIdx.y && threadIdx.x < s) 
-                    shm[0][threadIdx.x].x += shm[0][threadIdx.x+s].x;
-         if (0 == threadIdx.y && threadIdx.x < s) 
-                    shm[0][threadIdx.x].y += shm[0][threadIdx.x+s].y;
-         __syncthreads();
-      }
-      if (threadIdx.y == 0) {
-         //Reduce the final warp using shuffle
-         CmplxType tmp = shm[0][threadIdx.x];
-         for(int s = blockDim.x < 16 ? blockDim.x : 16; s>0;s/=2) {
-            tmp.x += __shfl_down(tmp.x,s);
-            tmp.y += __shfl_down(tmp.y,s);
-         }
-         
-         if (threadIdx.x == 0) {
-            out[n+q] = tmp;
-         }
+      CmplxType tmp;
+      tmp.x = sum_r;
+      tmp.y = sum_i;
+      if (threadIdx.x == 0) {
+         out[n+q] = tmp;
       }
    }
    }
@@ -156,7 +127,7 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
 
    cudaEventRecord(start);
    degrid_kernel<128>
-            <<<npts/32,dim3(gcf_dim,512/gcf_dim)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
+            <<<npts/32,dim3(32,8)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
    float kernel_time = getElapsed(start,stop);
    std::cout << "Processed " << npts << " complex points in " << kernel_time << " ms." << std::endl;
    std::cout << npts / 1000000.0 / kernel_time * gcf_dim * gcf_dim * 8 << "Gflops" << std::endl;
