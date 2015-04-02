@@ -99,13 +99,11 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    //img is padded to avoid overruns. Subtract to find the real head
    img -= img_dim*gcf_dim+gcf_dim;
 
-#ifndef __MANAGED
    //Pin CPU memory
    cudaHostRegister(img, sizeof(CmplxType)*(img_dim*img_dim+2*img_dim*gcf_dim+2*gcf_dim), cudaHostRegisterMapped);
    cudaHostRegister(gcf, sizeof(CmplxType)*64*gcf_dim*gcf_dim, cudaHostRegisterMapped);
    cudaHostRegister(out, sizeof(CmplxType)*npts, cudaHostRegisterMapped);
    cudaHostRegister(in, sizeof(CmplxType)*npts, cudaHostRegisterMapped);
-#endif
 
    //Allocate GPU memory
    std::cout << "img size = " << (img_dim*img_dim+2*img_dim*gcf_dim+2*gcf_dim)*
@@ -149,13 +147,11 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    cudaMemcpy(out, d_out, sizeof(CmplxType)*npts, cudaMemcpyDeviceToHost);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
 
-#ifndef __MANAGED
    //Unpin CPU memory
    cudaHostUnregister(img);
    cudaHostUnregister(gcf);
    cudaHostUnregister(out);
    cudaHostUnregister(in);
-#endif
 
    //Restore d_img and d_gcf for deallocation
    d_img -= img_dim*gcf_dim+gcf_dim;
