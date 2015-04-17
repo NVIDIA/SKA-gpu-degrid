@@ -73,10 +73,10 @@ void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, si
                         GCF_DIM*b+a].x;
          PRECISION i2 = gcf[GCF_DIM*GCF_DIM*(GCF_GRID*sub_y+sub_x) + 
                         GCF_DIM*b+a].y;
-         //std::cout << r1 << std::endl;
-         //std::cout << i1 << std::endl;
-         //std::cout << r2 << std::endl;
-         //std::cout << i2 << std::endl;
+         if (main_x+a < 0 || main_y+b < 0 || 
+             main_x+a >= IMG_SIZE  || main_y+b >= IMG_SIZE) {
+            r1=i1=0.0;
+         }
          sum_r += r1*r2 - i1*i2; 
          sum_i += r1*i2 + r2*i1;
       }
@@ -123,6 +123,55 @@ int w_comp_full(const void* A, const void* B) {
    if (0==result) return w_comp_main<T,Thalf>(A,B);
    else return result;
 }
+#if 0
+struct comp_grid {
+   int blockgrid, blocksize;
+   public:
+   comp_grid(int img_dim, int gcf_dim) {
+      blocksize = gcf_dim/2;
+      blockgrid = img_dim/blocksize;
+   }
+   int __cdecl operator () (const void* A, const void* B) const {
+      int gridxa = (*(int2*)A).x/GCF_GRID;
+      int gridxb = (*(int2*)B).x/GCF_GRID;
+      int gridya = (*(int2*)A).y/GCF_GRID;
+      int gridyb = (*(int2*)B).y/GCF_GRID;
+      if (gridya > gridyb) return 1;
+      if (gridya < gridyb) return -1;
+      if (gridxa > gridxb) return 1;
+      if (gridxa < gridxb) return  -1;
+      int suba = GCF_GRID*((*(int2*)A).x%GCF_GRID) + (*(int2*)A).y%GCF_GRID;
+      int subb = GCF_GRID*((*(int2*)B).x%GCF_GRID) + (*(int2*)B).y%GCF_GRID;
+      if (suba > subb) return 1;
+      if (suba < subb) return -1;
+      return  0;
+   }
+};
+#else
+template <class T, class Thalf>
+int comp_grid (const void* A, const void* B) {
+      int blocksize = GCF_DIM/2;
+      int mainxa = floorf((*(T*)A).x);
+      int mainxb = floorf((*(T*)B).x);
+      int mainya = floorf((*(T*)A).y);
+      int mainyb = floorf((*(T*)B).y);
+      int gridxa = mainxa/blocksize;
+      int gridxb = mainxb/blocksize;
+      int gridya = mainya/blocksize;
+      int gridyb = mainyb/blocksize;
+      if (gridya*IMG_SIZE/blocksize+gridxa > 
+          gridyb*IMG_SIZE/blocksize+gridxb) return 1;
+      if (gridya*IMG_SIZE/blocksize+gridxa < 
+          gridyb*IMG_SIZE/blocksize+gridxb) return -1;
+      Thalf suba = GCF_GRID*((*(T*)A).x-mainxa) + (*(T*)A).y-mainya;
+      Thalf subb = GCF_GRID*((*(T*)B).x-mainxb) + (*(T*)B).y-mainyb;
+      if (suba > subb) return 1;
+      if (suba < subb) return -1;
+      return  0;
+}
+#endif
+
+
 int main(void) {
 
 #ifdef __MANAGED
@@ -145,8 +194,8 @@ int main(void) {
    init_gcf(gcf, GCF_DIM);
    srand(2541617);
    for(size_t n=0; n<NPOINTS; n++) {
-      in[n].x = ((float)rand())/RAND_MAX*1000;
-      in[n].y = ((float)rand())/RAND_MAX*1000;
+      in[n].x = ((float)rand())/RAND_MAX*8000;
+      in[n].y = ((float)rand())/RAND_MAX*8000;
    }
    for(size_t x=0; x<IMG_SIZE;x++)
    for(size_t y=0; y<IMG_SIZE;y++) {
@@ -161,7 +210,12 @@ int main(void) {
       img[x+IMG_SIZE*IMG_SIZE].x = 0.0; img[x+IMG_SIZE*IMG_SIZE].y = 0.0;
    }
 
+#ifdef __SCATTER
+   std::qsort(in, NPOINTS, sizeof(PRECISION2), comp_grid<PRECISION2,PRECISION>);
+#else
    std::qsort(in, NPOINTS, sizeof(PRECISION2), w_comp_sub<PRECISION2,PRECISION>);
+#endif
+   std::cout << "sorted" << std::endl;
    
    degridGPU(out,in,NPOINTS,img,IMG_SIZE,gcf,GCF_DIM);
 #ifdef __CPU_CHECK
