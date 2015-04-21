@@ -13,6 +13,8 @@ Invoke "make" to make and "degrid" to run.
                         is 1 visibility per 32 threads. Details below 
 - DEBUG (1 to enable) compiles with debug flags for GPU and CPU. Also
                       enables CPU_CHECK
+- COMPUTE_GCF (1 to enable) compute the GCF in the kernel rather than
+                            reading from memory
 
 ===Make option details===
 Specify PRECISION on the make line to switch between
@@ -37,3 +39,14 @@ contribute to the same visibilty via an atomic addition. To enable
 this alternate method, call make with SCATTER=1. For example,
 
 %> make PRECISION=float MANAGED=1 CPU_CHECK=1 SCATTER=1
+
+If you specify COMPUTE_GCF=1, the GCF will not be loaded from memory.
+Instead, the first value of gcf[] will be read as (T,w) with T and w
+used to compute gcf(x,y) via
+
+gcf(x,y) = exp(2*pi*j*w*(1-T*sqrt(x**2+y**2)))
+
+where x,y is the distance from the image point to the visibility.
+This is for exploration purposes only. The values do not match the
+results in crocodile or the randomly generated gcf in degrid.cu.
+
