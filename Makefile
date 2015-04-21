@@ -11,6 +11,9 @@ endif
 ifeq ($(CPU_CHECK),1)
 	USERFLAGS += -D__CPU_CHECK
 endif
+ifeq ($(COMPUTE_GCF),1)
+	USERFLAGS += -D__COMPUTE_GCF
+endif
 USERFLAGS += -Xcompiler -fopenmp
 
 all:  degrid

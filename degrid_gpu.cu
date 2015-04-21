@@ -47,6 +47,10 @@ degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img,
                               size_t img_dim, CmplxType* gcf) {
    
    //TODO remove hard-coded 32
+#ifdef __COMPUTE_GCF
+   double T = gcf[0].x;
+   double w = gcf[0].y;
+#endif
    for (int n = 32*blockIdx.x; n<npts; n+= 32*gridDim.x) {
    for (int q=threadIdx.y;q<32;q+=blockDim.y) {
       CmplxType inn = in[n+q];
@@ -72,10 +76,16 @@ degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img,
          //               gcf_dim*b+a]);
          //auto r2 = this_gcf.x;
          //auto i2 = this_gcf.y;
+#ifdef __COMPUTE_GCF
+         double phase = 2*3.1415926*w*(1-T*sqrt((main_x-inn.x)*(main_x-inn.x)+(main_y-inn.y)*(main_y-inn.y)));
+         double r2 = sin(phase);
+         double i2 = cos(phase);
+#else
          auto r2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                         gcf_dim*b+a].x);
          auto i2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                         gcf_dim*b+a].y);
+#endif
          sum_r += r1*r2 - i1*i2; 
          sum_i += r1*i2 + r2*i1;
       }
@@ -160,7 +170,7 @@ __launch_bounds__(1024, 1)
 degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img, 
                               int img_dim, CmplxType* gcf, int* bookmarks) {
    
-   CmplxType __shared__ shm[gcf_dim][gcf_dim];
+   CmplxType __shared__ shm[gcf_dim][gcf_dim/4];
    int2 __shared__ inbuff[32];
    int left = blockIdx.x*blockDim.x;
    int top = blockIdx.y*blockDim.y;
@@ -170,22 +180,23 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
    auto i1 = img[this_x + img_dim * this_y].y;
    auto sum_r = make_zero(img);
    auto sum_i = make_zero(img);
+   int half_gcf = gcf_dim/2;
    
-   int bm_x = left/(gcf_dim/2)-1;
-   int bm_y = top/(gcf_dim/2)-1;
-   for (int y=bm_y<0?0:bm_y;(y<bm_y+4)&&(y<img_dim/gcf_dim*2);y++) {
-   for (int x=bm_x<0?0:bm_x;(x<bm_x+4)&&(x<img_dim/gcf_dim*2);x++) {
-   for (int n=bookmarks[y*img_dim/gcf_dim*2+x];
-            n<bookmarks[y*img_dim/gcf_dim*2+x+1]; n+=32) {
+   int bm_x = left/half_gcf-1;
+   int bm_y = top/half_gcf-1;
+   for (int y=bm_y<0?0:bm_y;(y<bm_y+2+(blockDim.y+half_gcf-1)/half_gcf)&&(y<img_dim/half_gcf);y++) {
+   for (int x=bm_x<0?0:bm_x;(x<bm_x+2+(blockDim.x+half_gcf-1)/half_gcf)&&(x<img_dim/half_gcf);x++) {
+   for (int n=bookmarks[y*img_dim/half_gcf+x];
+            n<bookmarks[y*img_dim/half_gcf+x+1]; n+=32) {
       if (threadIdx.x<32 && threadIdx.y==0) inbuff[threadIdx.x]=in[n+threadIdx.x];
       __syncthreads(); //1438
       
       //TODO remove
       //if (threadIdx.y==0 && threadIdx.x==22) shm[threadIdx.y][threadIdx.x].x = 4.44;
-      shm[threadIdx.y][threadIdx.x].x = 0.00;
-      shm[threadIdx.y][threadIdx.x].y = 0.00;
-      if (threadIdx.y==0 && threadIdx.x==22) shm[threadIdx.y][threadIdx.x].x = 4.04;
-   for (int q = 0; q<32 && n+q < bookmarks[y*img_dim/gcf_dim*2+x+1]; q++) {
+      shm[threadIdx.x][threadIdx.y].x = 0.00;
+      shm[threadIdx.x][threadIdx.y].y = 0.00;
+      //if (threadIdx.y==0 && threadIdx.x==22) shm[threadIdx.y][threadIdx.x].x = 4.04;
+   for (int q = 0; q<32 && n+q < bookmarks[y*img_dim/half_gcf+x+1]; q++) {
       int2 inn = inbuff[q];
       //TODO Don't floorf initially, just compare
       int main_y = inn.y/GCF_GRID;
@@ -196,8 +207,8 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
       int a = this_x - main_x;
       //Skip the whole block?
       //if (left-main_x >= gcf_dim/2 || left-main_x+gcf_dim < -gcf_dim/2) continue;
-      if (a >= gcf_dim/2 || a < -gcf_dim/2 ||
-          b >= gcf_dim/2 || b < -gcf_dim/2) {
+      if (a >= half_gcf || a < -half_gcf ||
+          b >= half_gcf || b < -half_gcf) {
          sum_r = 0.00;
          sum_i = 0.00;
       } else {
@@ -234,14 +245,15 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
          shm[threadIdx.x/32+stripe_width_x*(q%n_stripe)][threadIdx.y].y = sum_i;
       }
       //Once we've accumulated a full set, or this is the last q, reduce more
-      if (q+1==n_stripe || q==31 || n+q == bookmarks[y*img_dim/gcf_dim*2+x+1]-1) {
+      if (q+1==n_stripe || q==31 || n+q == bookmarks[y*img_dim/half_gcf+x+1]-1) {
          int stripe_width_y = blockDim.y/32;
+         if (stripe_width_y < 1) stripe_width_y=1;
          __syncthreads(); 
          if (threadIdx.y<(q+1)*stripe_width_x) {
             sum_r = shm[threadIdx.y][threadIdx.x].x;
             sum_i = shm[threadIdx.y][threadIdx.x].y;
-            warp_reduce2(sum_r);
-            warp_reduce2(sum_i);
+            warp_reduce2(sum_r, blockDim.y<32 ? blockDim.y:32);
+            warp_reduce2(sum_i, blockDim.y<32 ? blockDim.y:32);
             if (0 == threadIdx.x%32) {
                shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].x = sum_r;
                shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].y = sum_i;
@@ -382,8 +394,8 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    cudaMemset(d_out, 0, sizeof(CmplxType)*npts);
    cudaEventRecord(start);
    degrid_kernel2<GCF_DIM>
-            <<<dim3((img_dim+gcf_dim-1)/gcf_dim, (img_dim+gcf_dim-1)/gcf_dim),
-               dim3(gcf_dim, gcf_dim)>>>
+            <<<dim3((img_dim+gcf_dim-1)/gcf_dim, (img_dim+gcf_dim/4-1)/(gcf_dim/4)),
+               dim3(gcf_dim, gcf_dim/4)>>>
                              (d_out,in_ints,npts,d_img,img_dim,d_gcf,bookmarks); 
 #else
    cudaEventRecord(start);
