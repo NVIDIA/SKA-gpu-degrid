@@ -287,7 +287,7 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
                //shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].y = sum_i;
                int idx = threadIdx.y*stripe_width_y + (threadIdx.x/32);
                atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].x), sum_r);
-               atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].y, sum_i);
+               atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].y), sum_i);
             }
          }
 #if 0
