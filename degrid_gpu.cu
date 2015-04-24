@@ -50,6 +50,8 @@ degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img,
 #ifdef __COMPUTE_GCF
    double T = gcf[0].x;
    double w = gcf[0].y;
+   float p1 = 2*3.1415926*w;
+   float p2 = p1*T;
 #endif
    for (int n = 32*blockIdx.x; n<npts; n+= 32*gridDim.x) {
    for (int q=threadIdx.y;q<32;q+=blockDim.y) {
@@ -77,9 +79,16 @@ degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img,
          //auto r2 = this_gcf.x;
          //auto i2 = this_gcf.y;
 #ifdef __COMPUTE_GCF
-         double phase = 2*3.1415926*w*(1-T*sqrt((main_x-inn.x)*(main_x-inn.x)+(main_y-inn.y)*(main_y-inn.y)));
-         double r2 = sin(phase);
-         double i2 = cos(phase);
+         //double phase = 2*3.1415926*w*(1-T*sqrt((main_x-inn.x)*(main_x-inn.x)+(main_y-inn.y)*(main_y-inn.y)));
+         //double r2 = sin(phase);
+         //double i2 = cos(phase);
+         float xsquare = (main_x-inn.x);
+         float ysquare = (main_x-inn.x);
+         xsquare *= xsquare;
+         ysquare *= ysquare;
+         float phase = p1 - p2*sqrt(xsquare + ysquare);
+         float r2,i2;
+         sincosf(phase, &r2, &i2);
 #else
          auto r2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                         gcf_dim*b+a].x);
@@ -172,6 +181,12 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
    
    CmplxType __shared__ shm[gcf_dim][gcf_dim/4];
    int2 __shared__ inbuff[32];
+#ifdef __COMPUTE_GCF
+   double T = gcf[0].x;
+   double w = gcf[0].y;
+   float p1 = 2*3.1415926*w;
+   float p2 = p1*T;
+#endif
    int left = blockIdx.x*blockDim.x;
    int top = blockIdx.y*blockDim.y;
    int this_x = left+threadIdx.x;
@@ -212,12 +227,25 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
          sum_r = 0.00;
          sum_i = 0.00;
       } else {
+#ifdef __COMPUTE_GCF
+         //double phase = 2*3.1415926*w*(1-T*sqrt((main_x-inn.x)*(main_x-inn.x)+(main_y-inn.y)*(main_y-inn.y)));
+         //double r2 = sin(phase);
+         //double i2 = cos(phase);
+         float xsquare = (main_x-inn.x);
+         float ysquare = (main_x-inn.x);
+         xsquare *= xsquare;
+         ysquare *= ysquare;
+         float phase = p1 - p2*sqrt(xsquare + ysquare);
+         float r2,i2;
+         sincosf(phase, &r2, &i2);
+#else
          int sub_x = inn.x%GCF_GRID;
          int sub_y = inn.y%GCF_GRID;
          auto r2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                         gcf_dim*b+a].x);
          auto i2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                         gcf_dim*b+a].y);
+#endif
          //TODO remove
          //if (a!=0 || b!=0) {
          //   sum_r = sum_i = 0;
@@ -255,10 +283,14 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
             warp_reduce2(sum_r, blockDim.y<32 ? blockDim.y:32);
             warp_reduce2(sum_i, blockDim.y<32 ? blockDim.y:32);
             if (0 == threadIdx.x%32) {
-               shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].x = sum_r;
-               shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].y = sum_i;
+               //shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].x = sum_r;
+               //shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].y = sum_i;
+               int idx = threadIdx.y*stripe_width_y + (threadIdx.x/32);
+               atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].x), sum_r);
+               atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].y, sum_i);
             }
          }
+#if 0
          __syncthreads(); 
          //Warning: trouble if gcf_dim > sqrt(32*32*32) = 128
          int idx = threadIdx.x + threadIdx.y*blockDim.x;
@@ -272,6 +304,7 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
                atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].y),sum_i);
             }
          }
+#endif
       }
       
 #else
