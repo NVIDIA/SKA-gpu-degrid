@@ -213,7 +213,11 @@ int main(void) {
 #ifdef __SCATTER
    std::qsort(in, NPOINTS, sizeof(PRECISION2), comp_grid<PRECISION2,PRECISION>);
 #else
+#ifdef __MOVING_WINDOW
    std::qsort(in, NPOINTS, sizeof(PRECISION2), w_comp_sub<PRECISION2,PRECISION>);
+#else
+   std::qsort(in, NPOINTS, sizeof(PRECISION2), w_comp_sub<PRECISION2,PRECISION>);
+#endif
 #endif
    std::cout << "sorted" << std::endl;
    

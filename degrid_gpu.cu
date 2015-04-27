@@ -347,6 +347,147 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
    } //x
    } //y
 }
+template <int gcf_dim, class CmplxType>
+__global__ void 
+__launch_bounds__(1024, 1)
+degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img, 
+                              int img_dim, CmplxType* gcf) {
+   
+   CmplxType __shared__ shm[gcf_dim][gcf_dim];
+   int2 __shared__ inbuff[32];
+   auto sum_r = make_zero(img);
+   auto sum_i = make_zero(img);
+   auto r1 = sum_r;
+   auto i1 = sum_r;
+   int half_gcf = gcf_dim/2;
+   in += npts/gridDim.x*blockIdx.x;
+   out += npts/gridDim.x*blockIdx.x;
+   int last_idx = -INT_MAX;
+   
+   for (int n=0; n<npts/gridDim.x; n+=32) {
+
+      if (threadIdx.x<32 && threadIdx.y==0) inbuff[threadIdx.x]=in[n+threadIdx.x];
+      __syncthreads(); 
+      
+      shm[threadIdx.x][threadIdx.y].x = 0.00;
+      shm[threadIdx.x][threadIdx.y].y = 0.00;
+   for (int q = 0; q<32 && n+q < npts/gridDim.x; q++) {
+      int2 inn = inbuff[q];
+      int main_y = inn.y/GCF_GRID;
+      int main_x = inn.x/GCF_GRID;
+      int this_x = gcf_dim*((main_x+half_gcf-threadIdx.x-1)/gcf_dim)+threadIdx.x;
+      int this_y = gcf_dim*((main_y+half_gcf-threadIdx.y-1)/gcf_dim)+threadIdx.y;
+      if (this_x < 0 || this_x >= img_dim ||
+          this_y < 0 || this_y >= img_dim) {
+          //TODO pad instead
+          sum_r = 0.0;
+          sum_i = 0.0;
+      } else {
+      //TODO is this the same as last time?
+          int this_idx = this_x + img_dim * this_y;
+          if (1 || this_idx != last_idx) {
+             r1 = img[this_idx].x;
+             i1 = img[this_idx].y;
+             last_idx = this_idx;
+          }
+          int b = this_y - main_y;
+          int a = this_x - main_x;
+          int sub_x = inn.x%GCF_GRID;
+          int sub_y = inn.y%GCF_GRID;
+          auto r2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
+                         gcf_dim*b+a].x);
+          auto i2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
+                         gcf_dim*b+a].y);
+          sum_r = r1*r2 - i1*i2; 
+          sum_i = r1*i2 + r2*i1;
+      }
+
+     //reduce in two directions
+      //WARNING: Adjustments must be made if blockDim.y and blockDim.x are no
+      //         powers of 2 
+      //Reduce using shuffle first
+#if 1
+      warp_reduce2(sum_r);
+      warp_reduce2(sum_i);
+      int stripe_width_x = blockDim.x/32; //number of rows in shared memory that 
+                                          //contain data for a single visibility
+      int n_stripe = blockDim.y/stripe_width_x; //the number of stripes that fit
+      if (0 == threadIdx.x%32) {
+         shm[threadIdx.x/32+stripe_width_x*(q%n_stripe)][threadIdx.y].x = sum_r;
+         shm[threadIdx.x/32+stripe_width_x*(q%n_stripe)][threadIdx.y].y = sum_i;
+      }
+      //Once we've accumulated a full set, or this is the last q, reduce more
+      if (q+1==n_stripe || q==31 || n+q == npts/gridDim.x-1) {
+         int stripe_width_y = blockDim.y/32;
+         if (stripe_width_y < 1) stripe_width_y=1;
+         __syncthreads(); 
+         if (threadIdx.y<(q+1)*stripe_width_x) {
+            sum_r = shm[threadIdx.y][threadIdx.x].x;
+            sum_i = shm[threadIdx.y][threadIdx.x].y;
+            warp_reduce2(sum_r, blockDim.y<32 ? blockDim.y:32);
+            warp_reduce2(sum_i, blockDim.y<32 ? blockDim.y:32);
+            if (0 == threadIdx.x%32) {
+               shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].x = sum_r;
+               shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].y = sum_i;
+            }
+         }
+         __syncthreads(); 
+         //Warning: trouble if gcf_dim > sqrt(32*32*32) = 128
+         int idx = threadIdx.x + threadIdx.y*blockDim.x;
+         if (idx < stripe_width_x*stripe_width_y*(q+1)) {
+            sum_r = shm[0][idx].x;
+            sum_i = shm[0][idx].y;
+            warp_reduce2(sum_r, stripe_width_x*stripe_width_y);
+            warp_reduce2(sum_i, stripe_width_x*stripe_width_y);
+            if (0 == idx%(stripe_width_x*stripe_width_y)) {
+               atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].x),sum_r);
+               atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].y),sum_i);
+            }
+         }
+      }
+      
+#else
+
+      //Simple reduction
+      
+      shm[threadIdx.y][threadIdx.x].x = sum_r;
+      shm[threadIdx.y][threadIdx.x].y = sum_i;
+      __syncthreads();
+      //Reduce in y
+      for(int s = blockDim.y/2;s>0;s/=2) {
+         if (threadIdx.y < s) {
+           shm[threadIdx.y][threadIdx.x].x += shm[threadIdx.y+s][threadIdx.x].x;
+           shm[threadIdx.y][threadIdx.x].y += shm[threadIdx.y+s][threadIdx.x].y;
+         }
+         __syncthreads();
+      }
+
+      //Reduce the top row
+      for(int s = blockDim.x/2;s>16;s/=2) {
+         if (0 == threadIdx.y && threadIdx.x < s) 
+                    shm[0][threadIdx.x].x += shm[0][threadIdx.x+s].x;
+         if (0 == threadIdx.y && threadIdx.x < s) 
+                    shm[0][threadIdx.x].y += shm[0][threadIdx.x+s].y;
+         __syncthreads();
+      }
+      if (threadIdx.y == 0) {
+         //Reduce the final warp using shuffle
+         CmplxType tmp = shm[0][threadIdx.x];
+         for(int s = blockDim.x < 16 ? blockDim.x : 16; s>0;s/=2) {
+            tmp.x += __shfl_down(tmp.x,s);
+            tmp.y += __shfl_down(tmp.y,s);
+         }
+         if (threadIdx.x == 0) {
+            atomicAdd(&(out[n+q].x),tmp.x);
+            atomicAdd(&(out[n+q].y),tmp.y);
+            //out[n+q].x+=tmp.x;
+            //out[n+q].y+=tmp.y;
+         }
+      }
+#endif
+   } //q
+   } //n
+}
 
 template <class CmplxType>
 void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_t img_dim, 
@@ -431,9 +572,20 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
                dim3(gcf_dim, gcf_dim/4)>>>
                              (d_out,in_ints,npts,d_img,img_dim,d_gcf,bookmarks); 
 #else
+#ifdef __MOVING_WINDOW
+   int2* in_ints;
+   cudaEventRecord(start);
+   cudaMalloc(&in_ints, sizeof(int2)*npts);
+   vis2ints<<<4,256>>>(d_in, in_ints, npts);
+   CUDA_CHECK_ERR(__LINE__,__FILE__);
+   cudaMemset(d_out, 0, sizeof(CmplxType)*npts);
+   degrid_kernel3<GCF_DIM>
+               <<<npts/64,dim3(GCF_DIM,GCF_DIM)>>>(d_out,in_ints,npts,d_img,img_dim,d_gcf); 
+#else
    cudaEventRecord(start);
    degrid_kernel<GCF_DIM>
                <<<npts/32,dim3(32,8)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
+#endif
 #endif
    float kernel_time = getElapsed(start,stop);
    std::cout << "Processed " << npts << " complex points in " << kernel_time << " ms." << std::endl;
