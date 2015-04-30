@@ -75,10 +75,10 @@ void degridCPU(PRECISION2* out, PRECISION2 *in, size_t npts, PRECISION2 *img, si
                         GCF_DIM*b+a].y;
          if (main_x+a < 0 || main_y+b < 0 || 
              main_x+a >= IMG_SIZE  || main_y+b >= IMG_SIZE) {
-            r1=i1=0.0;
+         } else {
+            sum_r += r1*r2 - i1*i2; 
+            sum_i += r1*i2 + r2*i1;
          }
-         sum_r += r1*r2 - i1*i2; 
-         sum_i += r1*i2 + r2*i1;
       }
       out[n].x = sum_r;
       out[n].y = sum_i;
@@ -91,13 +91,13 @@ int w_comp_main(const void* A, const void* B) {
    Thalf quota, rema, quotb, remb;
    rema = modf((*((T*)A)).x, &quota);
    remb = modf((*((T*)B)).x, &quotb);
-   if (rema > remb) return 1;
-   if (rema < remb) return -1;
+   if (quota > quotb) return 1;
+   if (quota < quotb) return -1;
    else {
      rema = modf((*((T*)A)).y, &quota);
      remb = modf((*((T*)B)).y, &quotb);
-     if (rema > remb) return 1;
-     if (rema < remb) return 1;
+     if (quota > quotb) return 1;
+     if (quota < quotb) return -1;
      else return 0;
    }
    return 0;
@@ -214,7 +214,7 @@ int main(void) {
    std::qsort(in, NPOINTS, sizeof(PRECISION2), comp_grid<PRECISION2,PRECISION>);
 #else
 #ifdef __MOVING_WINDOW
-   std::qsort(in, NPOINTS, sizeof(PRECISION2), w_comp_sub<PRECISION2,PRECISION>);
+   std::qsort(in, NPOINTS, sizeof(PRECISION2), w_comp_main<PRECISION2,PRECISION>);
 #else
    std::qsort(in, NPOINTS, sizeof(PRECISION2), w_comp_sub<PRECISION2,PRECISION>);
 #endif

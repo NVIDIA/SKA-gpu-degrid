@@ -353,7 +353,13 @@ __launch_bounds__(1024, 1)
 degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img, 
                               int img_dim, CmplxType* gcf) {
    
-   CmplxType __shared__ shm[gcf_dim][gcf_dim];
+#ifdef __COMPUTE_GCF
+   double T = gcf[0].x;
+   double w = gcf[0].y;
+   float p1 = 2*3.1415926*w;
+   float p2 = p1*T;
+#endif
+   CmplxType __shared__ shm[gcf_dim/32][gcf_dim];
    int2 __shared__ inbuff[32];
    auto sum_r = make_zero(img);
    auto sum_i = make_zero(img);
@@ -363,29 +369,35 @@ degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img,
    in += npts/gridDim.x*blockIdx.x;
    out += npts/gridDim.x*blockIdx.x;
    int last_idx = -INT_MAX;
+   size_t gcf_y = threadIdx.y + blockIdx.y*blockDim.y;
+   int end_pt = npts/gridDim.x;
+   if (blockIdx.x==gridDim.x-1) end_pt = npts-npts/gridDim.x*blockIdx.x;
    
-   for (int n=0; n<npts/gridDim.x; n+=32) {
+   for (int n=0; n<end_pt; n+=32) {
 
       if (threadIdx.x<32 && threadIdx.y==0) inbuff[threadIdx.x]=in[n+threadIdx.x];
-      __syncthreads(); 
       
-      shm[threadIdx.x][threadIdx.y].x = 0.00;
-      shm[threadIdx.x][threadIdx.y].y = 0.00;
-   for (int q = 0; q<32 && n+q < npts/gridDim.x; q++) {
+      //shm[threadIdx.x][threadIdx.y].x = 0.00;
+      //shm[threadIdx.x][threadIdx.y].y = 0.00;
+      __syncthreads(); 
+   for (int q = 0; q<32 && n+q < end_pt; q++) {
       int2 inn = inbuff[q];
       int main_y = inn.y/GCF_GRID;
       int main_x = inn.x/GCF_GRID;
       int this_x = gcf_dim*((main_x+half_gcf-threadIdx.x-1)/gcf_dim)+threadIdx.x;
-      int this_y = gcf_dim*((main_y+half_gcf-threadIdx.y-1)/gcf_dim)+threadIdx.y;
+      int this_y;
+      this_y = gcf_dim*((main_y+half_gcf-gcf_y-1)/gcf_dim)+gcf_y;
       if (this_x < 0 || this_x >= img_dim ||
           this_y < 0 || this_y >= img_dim) {
-          //TODO pad instead
+          //TODO pad instead?
           sum_r = 0.0;
           sum_i = 0.0;
       } else {
       //TODO is this the same as last time?
           int this_idx = this_x + img_dim * this_y;
-          if (1 || this_idx != last_idx) {
+          prof_trigger(0);
+          if (last_idx != this_idx) {
+             prof_trigger(1);
              r1 = img[this_idx].x;
              i1 = img[this_idx].y;
              last_idx = this_idx;
@@ -394,10 +406,23 @@ degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img,
           int a = this_x - main_x;
           int sub_x = inn.x%GCF_GRID;
           int sub_y = inn.y%GCF_GRID;
+#ifdef __COMPUTE_GCF
+          //double phase = 2*3.1415926*w*(1-T*sqrt((main_x-inn.x)*(main_x-inn.x)+(main_y-inn.y)*(main_y-inn.y)));
+          //double r2 = sin(phase);
+          //double i2 = cos(phase);
+          float xsquare = (main_x-inn.x);
+          float ysquare = (main_x-inn.x);
+          xsquare *= xsquare;
+          ysquare *= ysquare;
+          float phase = p1 - p2*sqrt(xsquare + ysquare);
+          float r2,i2;
+          sincosf(phase, &r2, &i2);
+#else
           auto r2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                          gcf_dim*b+a].x);
           auto i2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                          gcf_dim*b+a].y);
+#endif
           sum_r = r1*r2 - i1*i2; 
           sum_i = r1*i2 + r2*i1;
       }
@@ -409,43 +434,42 @@ degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img,
 #if 1
       warp_reduce2(sum_r);
       warp_reduce2(sum_i);
-      int stripe_width_x = blockDim.x/32; //number of rows in shared memory that 
-                                          //contain data for a single visibility
-      int n_stripe = blockDim.y/stripe_width_x; //the number of stripes that fit
+#if 0
+      //Write immediately
       if (0 == threadIdx.x%32) {
-         shm[threadIdx.x/32+stripe_width_x*(q%n_stripe)][threadIdx.y].x = sum_r;
-         shm[threadIdx.x/32+stripe_width_x*(q%n_stripe)][threadIdx.y].y = sum_i;
+         atomicAdd(&(out[n+q].x),sum_r);
+         atomicAdd(&(out[n+q].y),sum_i);
       }
-      //Once we've accumulated a full set, or this is the last q, reduce more
-      if (q+1==n_stripe || q==31 || n+q == npts/gridDim.x-1) {
-         int stripe_width_y = blockDim.y/32;
-         if (stripe_width_y < 1) stripe_width_y=1;
-         __syncthreads(); 
-         if (threadIdx.y<(q+1)*stripe_width_x) {
-            sum_r = shm[threadIdx.y][threadIdx.x].x;
-            sum_i = shm[threadIdx.y][threadIdx.x].y;
-            warp_reduce2(sum_r, blockDim.y<32 ? blockDim.y:32);
-            warp_reduce2(sum_i, blockDim.y<32 ? blockDim.y:32);
-            if (0 == threadIdx.x%32) {
-               shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].x = sum_r;
-               shm[0][threadIdx.y*stripe_width_y + (threadIdx.x/32)].y = sum_i;
+#else
+      if (0 == threadIdx.x%32) {
+         //Save results as if shared memory were blockDim.y*32 by blockDim.x/32
+         //Each q writes a unique set of blockDim.y rows
+         shm[0][(threadIdx.y+q*blockDim.y)*blockDim.x/32+threadIdx.x/32].x = sum_r;
+         shm[0][(threadIdx.y+q*blockDim.y)*blockDim.x/32+threadIdx.x/32].y = sum_i;
+      }
+      if (q==31 || n+q == npts/gridDim.x-1) {
+         //Once we have filled all of shared memory, reduce further
+         //and write using atomicAdd
+         __syncthreads();
+         sum_r=shm[threadIdx.y][threadIdx.x].x;
+         sum_i=shm[threadIdx.y][threadIdx.x].y;
+         if (blockDim.x*blockDim.y>1024) {
+            warp_reduce2(sum_r);
+            warp_reduce2(sum_i);
+            if (0==(threadIdx.x + threadIdx.y*blockDim.x)%32) {
+               atomicAdd(&(out[n+(threadIdx.x+threadIdx.y*blockDim.x)/(blockDim.x*blockDim.y/32)].x), sum_r);
+               atomicAdd(&(out[n+(threadIdx.x+threadIdx.y*blockDim.x)/(blockDim.x*blockDim.y/32)].y), sum_i);
+            }
+         } else {
+            warp_reduce2(sum_r,blockDim.x*blockDim.y/32); 
+            warp_reduce2(sum_i,blockDim.x*blockDim.y/32); 
+            if (0==(threadIdx.x + threadIdx.y*blockDim.x)%(blockDim.x*blockDim.y/32)) {
+               atomicAdd(&(out[n+(threadIdx.x+threadIdx.y*blockDim.x)/(blockDim.x*blockDim.y/32)].x), sum_r);
+               atomicAdd(&(out[n+(threadIdx.x+threadIdx.y*blockDim.x)/(blockDim.x*blockDim.y/32)].y), sum_i);
             }
          }
-         __syncthreads(); 
-         //Warning: trouble if gcf_dim > sqrt(32*32*32) = 128
-         int idx = threadIdx.x + threadIdx.y*blockDim.x;
-         if (idx < stripe_width_x*stripe_width_y*(q+1)) {
-            sum_r = shm[0][idx].x;
-            sum_i = shm[0][idx].y;
-            warp_reduce2(sum_r, stripe_width_x*stripe_width_y);
-            warp_reduce2(sum_i, stripe_width_x*stripe_width_y);
-            if (0 == idx%(stripe_width_x*stripe_width_y)) {
-               atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].x),sum_r);
-               atomicAdd(&(out[n+idx/(stripe_width_x*stripe_width_y)].y),sum_i);
-            }
-         }
       }
-      
+#endif
 #else
 
       //Simple reduction
@@ -480,12 +504,14 @@ degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img,
          if (threadIdx.x == 0) {
             atomicAdd(&(out[n+q].x),tmp.x);
             atomicAdd(&(out[n+q].y),tmp.y);
-            //out[n+q].x+=tmp.x;
-            //out[n+q].y+=tmp.y;
+            //out[n+q].x=tmp.x;
+            //out[n+q].y=tmp.y;
          }
       }
+      __syncthreads();
 #endif
    } //q
+   __syncthreads();
    } //n
 }
 
@@ -574,13 +600,14 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
 #else
 #ifdef __MOVING_WINDOW
    int2* in_ints;
-   cudaEventRecord(start);
    cudaMalloc(&in_ints, sizeof(int2)*npts);
    vis2ints<<<4,256>>>(d_in, in_ints, npts);
    CUDA_CHECK_ERR(__LINE__,__FILE__);
    cudaMemset(d_out, 0, sizeof(CmplxType)*npts);
+   cudaEventRecord(start);
    degrid_kernel3<GCF_DIM>
-               <<<npts/64,dim3(GCF_DIM,GCF_DIM)>>>(d_out,in_ints,npts,d_img,img_dim,d_gcf); 
+               <<<dim3(npts/32,32),dim3(GCF_DIM,GCF_DIM/32)>>>(d_out,in_ints,npts,d_img,img_dim,d_gcf); 
+   //vis2ints<<<dim3(npts/64,8),dim3(GCF_DIM,GCF_DIM/8)>>>(d_in, in_ints, npts);
 #else
    cudaEventRecord(start);
    degrid_kernel<GCF_DIM>

@@ -11,6 +11,9 @@ endif
 ifeq ($(CPU_CHECK),1)
 	USERFLAGS += -D__CPU_CHECK
 endif
+ifeq ($(MOVING_WINDOW),1)
+	USERFLAGS += -D__MOVING_WINDOW
+endif
 ifeq ($(COMPUTE_GCF),1)
 	USERFLAGS += -D__COMPUTE_GCF
 endif
