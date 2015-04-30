@@ -2,7 +2,7 @@
 #define __DEFINES_H
 
 #define NPOINTS 1000000
-#define GCF_DIM 128
+#define GCF_DIM 128 
 #define IMG_SIZE 8192
 #define GCF_GRID 8
 
