@@ -176,7 +176,7 @@ __global__ void set_bookmarks(int2* vis_in, int npts, int blocksize, int blockgr
 template <int gcf_dim, class CmplxType>
 __global__ void 
 __launch_bounds__(1024, 1)
-degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img, 
+degrid_kernel_scatter(CmplxType* out, int2* in, size_t npts, CmplxType* img, 
                               int img_dim, CmplxType* gcf, int* bookmarks) {
    
    CmplxType __shared__ shm[gcf_dim][gcf_dim/4];
@@ -350,7 +350,7 @@ degrid_kernel2(CmplxType* out, int2* in, size_t npts, CmplxType* img,
 template <int gcf_dim, class CmplxType>
 __global__ void 
 __launch_bounds__(1024, 1)
-degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img, 
+degrid_kernel_window(CmplxType* out, int2* in, size_t npts, CmplxType* img, 
                               int img_dim, CmplxType* gcf) {
    
 #ifdef __COMPUTE_GCF
@@ -359,7 +359,7 @@ degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img,
    float p1 = 2*3.1415926*w;
    float p2 = p1*T;
 #endif
-   CmplxType __shared__ shm[gcf_dim/32][gcf_dim];
+   CmplxType __shared__ shm[BLOCK_Y][gcf_dim];
    int2 __shared__ inbuff[32];
    auto sum_r = make_zero(img);
    auto sum_i = make_zero(img);
@@ -402,10 +402,6 @@ degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img,
              i1 = img[this_idx].y;
              last_idx = this_idx;
           }
-          int b = this_y - main_y;
-          int a = this_x - main_x;
-          int sub_x = inn.x%GCF_GRID;
-          int sub_y = inn.y%GCF_GRID;
 #ifdef __COMPUTE_GCF
           //double phase = 2*3.1415926*w*(1-T*sqrt((main_x-inn.x)*(main_x-inn.x)+(main_y-inn.y)*(main_y-inn.y)));
           //double r2 = sin(phase);
@@ -418,6 +414,10 @@ degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img,
           float r2,i2;
           sincosf(phase, &r2, &i2);
 #else
+          int sub_x = inn.x%GCF_GRID;
+          int sub_y = inn.y%GCF_GRID;
+          int b = this_y - main_y;
+          int a = this_x - main_x;
           auto r2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
                          gcf_dim*b+a].x);
           auto i2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
@@ -441,6 +441,7 @@ degrid_kernel3(CmplxType* out, int2* in, size_t npts, CmplxType* img,
          atomicAdd(&(out[n+q].y),sum_i);
       }
 #else
+      //Reduce again in shared mem
       if (0 == threadIdx.x%32) {
          //Save results as if shared memory were blockDim.y*32 by blockDim.x/32
          //Each q writes a unique set of blockDim.y rows
@@ -593,7 +594,7 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    
    cudaMemset(d_out, 0, sizeof(CmplxType)*npts);
    cudaEventRecord(start);
-   degrid_kernel2<GCF_DIM>
+   degrid_kernel_scatter<GCF_DIM>
             <<<dim3((img_dim+gcf_dim-1)/gcf_dim, (img_dim+gcf_dim/4-1)/(gcf_dim/4)),
                dim3(gcf_dim, gcf_dim/4)>>>
                              (d_out,in_ints,npts,d_img,img_dim,d_gcf,bookmarks); 
@@ -605,8 +606,8 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    CUDA_CHECK_ERR(__LINE__,__FILE__);
    cudaMemset(d_out, 0, sizeof(CmplxType)*npts);
    cudaEventRecord(start);
-   degrid_kernel3<GCF_DIM>
-               <<<dim3(npts/32,32),dim3(GCF_DIM,GCF_DIM/32)>>>(d_out,in_ints,npts,d_img,img_dim,d_gcf); 
+   degrid_kernel_window<GCF_DIM>
+               <<<dim3(npts/32,GCF_DIM/BLOCK_Y),dim3(GCF_DIM,BLOCK_Y)>>>(d_out,in_ints,npts,d_img,img_dim,d_gcf); 
    //vis2ints<<<dim3(npts/64,8),dim3(GCF_DIM,GCF_DIM/8)>>>(d_in, in_ints, npts);
 #else
    cudaEventRecord(start);
