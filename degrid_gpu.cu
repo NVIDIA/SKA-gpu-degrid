@@ -112,6 +112,78 @@ degrid_kernel(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img,
    }
    }
 }
+template <int gcf_dim, class CmplxType>
+__global__ void 
+//__launch_bounds__(256, 6)
+degrid_kernel_small_gcf(CmplxType* out, CmplxType* in, size_t npts, CmplxType* img, 
+                              size_t img_dim, CmplxType* gcf) {
+   
+   //TODO remove hard-coded 32
+#ifdef __COMPUTE_GCF
+   double T = gcf[0].x;
+   double w = gcf[0].y;
+   float p1 = 2*3.1415926*w;
+   float p2 = p1*T;
+#endif
+   for (int n = 32*blockIdx.x; n<npts; n+= 32*gridDim.x) {
+   for (int q=threadIdx.y;q<32;q+=blockDim.y) {
+      CmplxType inn = in[n+q];
+      int sub_x = floorf(GCF_GRID*(inn.x-floorf(inn.x)));
+      int sub_y = floorf(GCF_GRID*(inn.y-floorf(inn.y)));
+      int main_x = floorf(inn.x); 
+      int main_y = floorf(inn.y); 
+      auto sum_r = make_zero(img);
+      auto sum_i = make_zero(img);
+      int a = -gcf_dim/2 + threadIdx.x%gcf_dim;
+      for(int b = -gcf_dim/2+threadIdx.x/gcf_dim;b<gcf_dim/2;b+=blockDim.x/gcf_dim)
+      {
+         //auto this_img = img[main_x+a+img_dim*(main_y+b)]; 
+         //auto r1 = this_img.x;
+         //auto i1 = this_img.y;
+         auto r1 = img[main_x+a+img_dim*(main_y+b)].x; 
+         auto i1 = img[main_x+a+img_dim*(main_y+b)].y; 
+         if (main_x+a < 0 || main_y+b < 0 || 
+             main_x+a >= IMG_SIZE  || main_y+b >= IMG_SIZE) {
+            r1=i1=0.0;
+         }
+         //auto this_gcf = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
+         //               gcf_dim*b+a]);
+         //auto r2 = this_gcf.x;
+         //auto i2 = this_gcf.y;
+#ifdef __COMPUTE_GCF
+         //double phase = 2*3.1415926*w*(1-T*sqrt((main_x-inn.x)*(main_x-inn.x)+(main_y-inn.y)*(main_y-inn.y)));
+         //double r2 = sin(phase);
+         //double i2 = cos(phase);
+         float xsquare = (main_x-inn.x);
+         float ysquare = (main_x-inn.x);
+         xsquare *= xsquare;
+         ysquare *= ysquare;
+         float phase = p1 - p2*sqrt(xsquare + ysquare);
+         float r2,i2;
+         sincosf(phase, &r2, &i2);
+#else
+         auto r2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
+                        gcf_dim*b+a].x);
+         auto i2 = __ldg(&gcf[gcf_dim*gcf_dim*(GCF_GRID*sub_y+sub_x) + 
+                        gcf_dim*b+a].y);
+#endif
+         sum_r += r1*r2 - i1*i2; 
+         sum_i += r1*i2 + r2*i1;
+      }
+
+      for(int s = blockDim.x < 16 ? blockDim.x : 16; s>0;s/=2) {
+         sum_r += __shfl_down(sum_r,s);
+         sum_i += __shfl_down(sum_i,s);
+      }
+      CmplxType tmp;
+      tmp.x = sum_r;
+      tmp.y = sum_i;
+      if (threadIdx.x == 0) {
+         out[n+q] = tmp;
+      }
+   }
+   }
+}
 __device__ void warp_reduce(double &in, int sz = 16) {
    if (16<sz) sz=16;
    for(int s = sz; s>0;s/=2) {
@@ -611,8 +683,13 @@ void degridGPU(CmplxType* out, CmplxType* in, size_t npts, CmplxType *img, size_
    //vis2ints<<<dim3(npts/64,8),dim3(GCF_DIM,GCF_DIM/8)>>>(d_in, in_ints, npts);
 #else
    cudaEventRecord(start);
-   degrid_kernel<GCF_DIM>
+   if (GCF_DIM < 32) {
+      degrid_kernel_small_gcf<GCF_DIM>
+               <<<npts/32,dim3(32,32)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
+   } else {
+      degrid_kernel<GCF_DIM>
                <<<npts/32,dim3(32,8)>>>(d_out,d_in,npts,d_img,img_dim,d_gcf); 
+   }
 #endif
 #endif
    float kernel_time = getElapsed(start,stop);
