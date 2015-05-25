@@ -21,6 +21,11 @@ USERFLAGS += -Xcompiler -fopenmp
 
 all:  degrid GPUDegrid.so
 
+clean:
+	rm *.o
+	rm GPUDegrid.so
+	rm degrid
+
 degrid: degrid.cu cucommon.cuh degrid_gpu.cuh degrid_gpu.o Defines.h
 	nvcc -arch=sm_35 -std=c++11 -DPRECISION=${PRECISION} $(USERFLAGS) -o degrid degrid.cu degrid_gpu.o
 
