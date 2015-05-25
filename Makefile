@@ -5,7 +5,19 @@ endif
 ifeq ($(DEBUG),1)
 	USERFLAGS += -g -G -lineinfo -D__CPU_CHECK
 endif
-#USERFLAGS += -Xcompiler -fPIC
+ifeq ($(SCATTER),1)
+	USERFLAGS += -D__SCATTER
+endif
+ifeq ($(CPU_CHECK),1)
+	USERFLAGS += -D__CPU_CHECK
+endif
+ifeq ($(MOVING_WINDOW),1)
+	USERFLAGS += -D__MOVING_WINDOW
+endif
+ifeq ($(COMPUTE_GCF),1)
+	USERFLAGS += -D__COMPUTE_GCF
+endif
+USERFLAGS += -Xcompiler -fopenmp
 
 all:  degrid GPUDegrid.so
 
